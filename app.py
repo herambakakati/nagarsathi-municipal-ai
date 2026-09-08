@@ -5361,37 +5361,47 @@ ANSWER:
                     // ====================================================
         
                     function viewPDF(
-                        base64
-                    ) {{
-        
-                        try {{
-        
+                        base64,
+                        pageNumber
+                    ) {
+                    
+                        try {
+                    
                             const blob =
                                 base64ToBlob(
                                     base64,
                                     "application/pdf"
                                 );
-        
+                    
                             const pdfURL =
                                 URL.createObjectURL(
                                     blob
                                 );
-        
+                    
+                            /*
+                             * Open the PDF directly
+                             * at the referenced page.
+                             */
+                            const pageURL =
+                                pdfURL +
+                                "#page=" +
+                                pageNumber;
+                    
                             window.open(
-                                pdfURL,
+                                pageURL,
                                 "_blank"
                             );
-        
-                        }} catch (error) {{
-        
+                    
+                        } catch (error) {
+                    
                             console.error(
                                 "Unable to open PDF:",
                                 error
                             );
-        
-                        }}
-        
-                    }}
+                    
+                        }
+                    
+                    }
         
         
                     // ====================================================
