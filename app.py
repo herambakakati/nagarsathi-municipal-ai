@@ -1,15 +1,12 @@
 import os
 import base64
+import streamlit.components.v1 as components
 from pathlib import Path
 from datetime import datetime
-
 from pypdf import PdfReader
-
 import streamlit as st
 from PIL import Image
-
 from dotenv import load_dotenv
-
 from langchain_openai import (
     ChatOpenAI,
     OpenAIEmbeddings
@@ -25,7 +22,6 @@ from langchain_core.output_parsers import StrOutputParser
 # ============================================================
 
 import textwrap
-
 def render_html(html):
 
     st.html(
@@ -4841,193 +4837,641 @@ ANSWER:
         )
 
 
-        # ============================================================
+        #============================================================
         # REFERENCE DOCUMENTS
-        # COLLAPSED BY DEFAULT
-        # VIEW = NEW BROWSER TAB
-        # DOWNLOAD = DIRECT DOWNLOAD
+        # VIEW = OPEN PDF IN NEW TAB
+        # DOWNLOAD = DIRECT PDF DOWNLOAD
         # ============================================================
-
+        
         if pdf_references:
-            source_rows_html = ""
+        
+            reference_rows = ""
+        
             for ref in pdf_references:
-
-                # ----------------------------------------------------
+        
+                # --------------------------------------------------------
                 # READ PDF
-                # ----------------------------------------------------
-
+                # --------------------------------------------------------
+        
                 try:
-
-                    with open(
-                        ref["path"],
-                        "rb"
-                    ) as pdf_file:
-
+                    with open(ref["path"], "rb") as pdf_file:
                         pdf_bytes = pdf_file.read()
-
+        
                 except Exception:
-
                     continue
-
-
-                # ----------------------------------------------------
+        
+                # --------------------------------------------------------
                 # CONVERT PDF TO BASE64
-                # ----------------------------------------------------
-
+                # --------------------------------------------------------
+        
                 pdf_base64 = base64.b64encode(
                     pdf_bytes
                 ).decode("utf-8")
-
-
-                # ----------------------------------------------------
-                # PDF DATA URL
-                # ----------------------------------------------------
-
-                pdf_data_url = (
-                    "data:application/pdf;base64,"
-                    + pdf_base64
-                )
-
-
-                # ----------------------------------------------------
+        
+                # --------------------------------------------------------
                 # SAFE DISPLAY VALUES
-                # ----------------------------------------------------
-
+                # --------------------------------------------------------
+        
                 source_index = html.escape(
                     str(ref["index"])
                 )
-
+        
                 document_title = html.escape(
                     str(ref["title"])
                 )
-
+        
                 page_number = html.escape(
                     str(ref["page"])
                 )
-
+        
                 download_filename = html.escape(
                     ref["path"].name,
                     quote=True
                 )
-
-
-                # ----------------------------------------------------
-                # SOURCE ROW
-                # ----------------------------------------------------
-
-                source_rows_html += f"""
-
+        
+                # --------------------------------------------------------
+                # ONE REFERENCE ROW
+                # --------------------------------------------------------
+        
+                reference_rows += f"""
                 <div class="reference-document-row">
-
+        
                     <div class="reference-document-main">
-
+        
                         <div class="reference-document-icon">
                             📄
                         </div>
-
+        
                         <div class="reference-document-content">
-
+        
                             <div class="reference-document-title">
                                 Reference {source_index}
                             </div>
-
+        
                             <div class="reference-document-reference">
-
+        
                                 <span class="reference-document-name">
                                     {document_title}
                                 </span>
-
+        
                                 <span class="reference-document-separator">
                                     |
                                 </span>
-
+        
                                 <span class="reference-document-page">
                                     Page {page_number}
                                 </span>
-
-                                <!-- ==================================
-                                    VIEW PDF
-                                    Opens PDF in NEW browser tab
-                                    ================================== -->
-
-                                <a
-                                    href="{pdf_data_url}"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
+        
+                                <!-- =====================================
+                                     VIEW BUTTON
+                                     ===================================== -->
+        
+                                <button
+                                    type="button"
                                     class="reference-view-button"
+                                    onclick="viewPDF(
+                                        '{pdf_base64}'
+                                    )"
                                 >
                                     View
-                                </a>
-
-
-                                <!-- ==================================
-                                    DOWNLOAD PDF
-                                    Does NOT trigger Streamlit rerun
-                                    ================================== -->
-
-                                <a
-                                    href="{pdf_data_url}"
-                                    download="{download_filename}"
+                                </button>
+        
+                                <!-- =====================================
+                                     DOWNLOAD BUTTON
+                                     ===================================== -->
+        
+                                <button
+                                    type="button"
                                     class="reference-download-button"
+                                    onclick="downloadPDF(
+                                        '{pdf_base64}',
+                                        '{download_filename}'
+                                    )"
                                     title="Download Reference {source_index}"
                                 >
                                     ↓
-                                </a>
-
+                                </button>
+        
                             </div>
-
+        
                         </div>
-
+        
                     </div>
-
+        
                 </div>
-
                 """
-
-
-            # ========================================================
-            # REFERENCE DOCUMENTS PANEL
-            # ========================================================
-
-            render_html(
-                f"""
-
+        
+            # ============================================================
+            # COMPLETE REFERENCE PANEL
+            # ============================================================
+        
+            reference_html = f"""
+            <!DOCTYPE html>
+        
+            <html>
+        
+            <head>
+        
+                <meta charset="UTF-8">
+        
+                <style>
+        
+                    * {{
+                        box-sizing: border-box;
+                    }}
+        
+                    html,
+                    body {{
+                        margin: 0;
+                        padding: 0;
+                        background: transparent;
+                        font-family:
+                            Inter,
+                            -apple-system,
+                            BlinkMacSystemFont,
+                            "Segoe UI",
+                            sans-serif;
+                    }}
+        
+                    .reference-documents-panel {{
+                        width: 100%;
+                        margin: 0;
+                        padding: 0;
+        
+                        border:
+                            1px solid
+                            rgba(62, 91, 157, 0.34);
+        
+                        border-radius: 11px;
+        
+                        background:
+                            linear-gradient(
+                                180deg,
+                                rgba(11, 27, 56, 0.92),
+                                rgba(8, 21, 46, 0.92)
+                            );
+        
+                        overflow: hidden;
+                    }}
+        
+                    .reference-header {{
+                        width: 100%;
+                        min-height: 46px;
+        
+                        padding: 0 18px;
+        
+                        display: flex;
+                        align-items: center;
+        
+                        color: #E6EAF4;
+        
+                        font-size: 14px;
+                        font-weight: 650;
+                    }}
+        
+                    .reference-folder-icon {{
+                        flex-shrink: 0;
+                        margin-right: 9px;
+                        font-size: 17px;
+                        line-height: 1;
+                    }}
+        
+                    .reference-panel-title {{
+                        color: #E6EAF4;
+                        white-space: nowrap;
+                    }}
+        
+                    .reference-panel-count {{
+                        margin-left: 6px;
+                        color: #8996B5;
+                        font-size: 13px;
+                        font-weight: 500;
+                    }}
+        
+                    .reference-document-list {{
+                        width: 100%;
+        
+                        padding: 3px 18px 10px 18px;
+        
+                        border-top:
+                            1px solid
+                            rgba(65, 91, 155, 0.22);
+                    }}
+        
+                    .reference-document-row {{
+                        width: 100%;
+                        min-height: 62px;
+        
+                        display: flex;
+                        align-items: center;
+        
+                        border-bottom:
+                            1px solid
+                            rgba(65, 91, 155, 0.14);
+                    }}
+        
+                    .reference-document-row:last-child {{
+                        border-bottom: none;
+                    }}
+        
+                    .reference-document-main {{
+                        width: 100%;
+        
+                        display: flex;
+                        align-items: center;
+        
+                        min-width: 0;
+                    }}
+        
+                    .reference-document-icon {{
+                        width: 30px;
+                        min-width: 30px;
+        
+                        display: flex;
+                        align-items: center;
+                        justify-content: flex-start;
+        
+                        font-size: 16px;
+                    }}
+        
+                    .reference-document-content {{
+                        width: 100%;
+                        min-width: 0;
+                    }}
+        
+                    .reference-document-title {{
+                        margin-bottom: 3px;
+        
+                        color: #F2F5FF;
+        
+                        font-size: 12px;
+                        font-weight: 700;
+                        line-height: 1.2;
+                    }}
+        
+                    .reference-document-reference {{
+                        width: 100%;
+        
+                        display: flex;
+                        align-items: center;
+        
+                        min-width: 0;
+        
+                        color: #B7C2DD;
+        
+                        font-size: 12px;
+                        line-height: 1.3;
+                    }}
+        
+                    .reference-document-name {{
+                        min-width: 0;
+                        max-width: calc(100% - 125px);
+        
+                        overflow: hidden;
+                        white-space: nowrap;
+                        text-overflow: ellipsis;
+        
+                        color: #B8C7E6;
+                    }}
+        
+                    .reference-document-separator {{
+                        margin: 0 8px;
+                        color: #6D7A99;
+                    }}
+        
+                    .reference-document-page {{
+                        flex-shrink: 0;
+                        color: #9AA8C7;
+                        white-space: nowrap;
+                    }}
+        
+                    /* ====================================================
+                       VIEW BUTTON
+                       ==================================================== */
+        
+                    .reference-view-button {{
+                        flex-shrink: 0;
+        
+                        width: 52px;
+                        height: 34px;
+        
+                        margin-left: 10px;
+        
+                        display: inline-flex;
+                        align-items: center;
+                        justify-content: center;
+        
+                        padding: 0;
+        
+                        border:
+                            1px solid
+                            rgba(89, 112, 180, 0.55);
+        
+                        border-radius: 9px;
+        
+                        background:
+                            rgba(17, 30, 59, 0.82);
+        
+                        color: #F1F4FF;
+        
+                        font-family: inherit;
+                        font-size: 12px;
+                        font-weight: 650;
+        
+                        cursor: pointer;
+        
+                        transition:
+                            background 0.15s ease,
+                            border-color 0.15s ease,
+                            transform 0.15s ease;
+                    }}
+        
+                    .reference-view-button:hover {{
+                        background:
+                            rgba(38, 51, 80, 0.98);
+        
+                        border-color:
+                            rgba(115, 135, 200, 0.85);
+        
+                        transform: translateY(-1px);
+                    }}
+        
+                    /* ====================================================
+                       DOWNLOAD BUTTON
+                       ==================================================== */
+        
+                    .reference-download-button {{
+                        flex-shrink: 0;
+        
+                        width: 34px;
+                        height: 34px;
+        
+                        margin-left: 6px;
+        
+                        display: inline-flex;
+                        align-items: center;
+                        justify-content: center;
+        
+                        padding: 0;
+        
+                        border:
+                            1px solid
+                            rgba(89, 112, 180, 0.55);
+        
+                        border-radius: 9px;
+        
+                        background:
+                            rgba(17, 30, 59, 0.82);
+        
+                        color: #F1F4FF;
+        
+                        font-family: inherit;
+                        font-size: 18px;
+                        font-weight: 500;
+        
+                        line-height: 1;
+        
+                        cursor: pointer;
+        
+                        transition:
+                            background 0.15s ease,
+                            border-color 0.15s ease,
+                            transform 0.15s ease;
+                    }}
+        
+                    .reference-download-button:hover {{
+                        background:
+                            rgba(38, 51, 80, 0.98);
+        
+                        border-color:
+                            rgba(115, 135, 200, 0.85);
+        
+                        transform: translateY(-1px);
+                    }}
+        
+                    @media (max-width: 700px) {{
+        
+                        .reference-document-name {{
+                            max-width: 150px;
+                        }}
+        
+                    }}
+        
+                </style>
+        
+            </head>
+        
+            <body>
+        
                 <div class="reference-documents-panel">
-
-                    <details>
-
-                        <summary>
-
-                            <span class="reference-folder-icon">
-                                📁
-                            </span>
-
-                            <span class="reference-panel-title">
-                                Reference documents
-                            </span>
-
-                            <span class="reference-panel-count">
-                                {len(pdf_references)}
-                            </span>
-
-                            <span class="reference-panel-arrow">
-                                ›
-                            </span>
-
-                        </summary>
-
-
-                        <div class="reference-document-list">
-
-                            {source_rows_html}
-
-                        </div>
-
-                    </details>
-
+        
+                    <div class="reference-header">
+        
+                        <span class="reference-folder-icon">
+                            📁
+                        </span>
+        
+                        <span class="reference-panel-title">
+                            Reference documents
+                        </span>
+        
+                        <span class="reference-panel-count">
+                            {len(pdf_references)}
+                        </span>
+        
+                    </div>
+        
+                    <div class="reference-document-list">
+        
+                        {reference_rows}
+        
+                    </div>
+        
                 </div>
-
-                """
+        
+        
+                <script>
+        
+                    // ====================================================
+                    // BASE64 → BLOB
+                    // ====================================================
+        
+                    function base64ToBlob(
+                        base64,
+                        contentType
+                    ) {{
+        
+                        const byteCharacters =
+                            atob(base64);
+        
+                        const byteArrays = [];
+        
+                        const sliceSize = 1024;
+        
+                        for (
+                            let offset = 0;
+                            offset < byteCharacters.length;
+                            offset += sliceSize
+                        ) {{
+        
+                            const slice =
+                                byteCharacters.slice(
+                                    offset,
+                                    offset + sliceSize
+                                );
+        
+                            const byteNumbers =
+                                new Array(slice.length);
+        
+                            for (
+                                let i = 0;
+                                i < slice.length;
+                                i++
+                            ) {{
+        
+                                byteNumbers[i] =
+                                    slice.charCodeAt(i);
+        
+                            }}
+        
+                            const byteArray =
+                                new Uint8Array(
+                                    byteNumbers
+                                );
+        
+                            byteArrays.push(
+                                byteArray
+                            );
+        
+                        }}
+        
+                        return new Blob(
+                            byteArrays,
+                            {{
+                                type: contentType
+                            }}
+                        );
+                    }}
+        
+        
+                    // ====================================================
+                    // VIEW PDF
+                    // OPENS PDF IN NEW BROWSER TAB
+                    // ====================================================
+        
+                    function viewPDF(
+                        base64
+                    ) {{
+        
+                        try {{
+        
+                            const blob =
+                                base64ToBlob(
+                                    base64,
+                                    "application/pdf"
+                                );
+        
+                            const pdfURL =
+                                URL.createObjectURL(
+                                    blob
+                                );
+        
+                            window.open(
+                                pdfURL,
+                                "_blank"
+                            );
+        
+                        }} catch (error) {{
+        
+                            console.error(
+                                "Unable to open PDF:",
+                                error
+                            );
+        
+                        }}
+        
+                    }}
+        
+        
+                    // ====================================================
+                    // DOWNLOAD PDF
+                    // ====================================================
+        
+                    function downloadPDF(
+                        base64,
+                        filename
+                    ) {{
+        
+                        try {{
+        
+                            const blob =
+                                base64ToBlob(
+                                    base64,
+                                    "application/pdf"
+                                );
+        
+                            const pdfURL =
+                                URL.createObjectURL(
+                                    blob
+                                );
+        
+                            const link =
+                                document.createElement(
+                                    "a"
+                                );
+        
+                            link.href = pdfURL;
+                            link.download = filename;
+        
+                            document.body.appendChild(
+                                link
+                            );
+        
+                            link.click();
+        
+                            document.body.removeChild(
+                                link
+                            );
+        
+                            setTimeout(
+                                function() {{
+                                    URL.revokeObjectURL(
+                                        pdfURL
+                                    );
+                                }},
+                                1000
+                            );
+        
+                        }} catch (error) {{
+        
+                            console.error(
+                                "Unable to download PDF:",
+                                error
+                            );
+        
+                        }}
+        
+                    }}
+        
+                </script>
+        
+            </body>
+        
+            </html>
+            """
+        
+            # ============================================================
+            # RENDER REFERENCE PANEL
+            # ============================================================
+        
+            components.html(
+                reference_html,
+                height=(
+                    48
+                    + (len(pdf_references) * 62)
+                    + 14
+                ),
+                scrolling=False
             )
 
 
