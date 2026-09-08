@@ -4931,7 +4931,7 @@ ANSWER:
                                     class="reference-view-button"
                                     onclick="viewPDF(
                                         '{pdf_base64}',
-                                        {int(ref["page"])}
+                                        {page_number}
                                     )"
                                 >
                                     View
@@ -5363,9 +5363,9 @@ ANSWER:
                     function viewPDF(
                         base64,
                         pageNumber
-                    ) {
+                    ) {{
                     
-                        try {
+                        try {{
                     
                             const blob =
                                 base64ToBlob(
@@ -5392,16 +5392,16 @@ ANSWER:
                                 "_blank"
                             );
                     
-                        } catch (error) {
+                        }} catch (error) {{
                     
                             console.error(
                                 "Unable to open PDF:",
                                 error
                             );
                     
-                        }
+                        }}
                     
-                    }
+                    }}
         
         
                     // ====================================================
