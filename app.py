@@ -53,7 +53,7 @@ st.set_page_config(
 
 )
 
-st.set_option("client.toolbarMode", "minimal")
+st.set_option("client.toolbarMode", "viewer")
 
 # ============================================================
 # 3. BASE PATHS
