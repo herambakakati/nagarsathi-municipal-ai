@@ -4007,7 +4007,6 @@ with st.sidebar:
         ):
 
             from rag_build import build_vectorstore
-
             success = build_vectorstore()
 
 
