@@ -47,15 +47,13 @@ load_dotenv()
 st.set_page_config(
 
     page_title="NagarSathi",
-
     page_icon="🏛️",
-
     layout="wide",
-
     initial_sidebar_state="expanded"
 
 )
 
+st.set_option("client.toolbarMode", "minimal")
 
 # ============================================================
 # 3. BASE PATHS
