@@ -3518,7 +3518,6 @@ section[data-testid="stSidebar"]
 # ============================================================
 
 def count_sources():
-
     count = 0
 
     for folder in [
@@ -3526,32 +3525,32 @@ def count_sources():
         WORD_DIR,
         EXCEL_DIR
     ]:
+        # Only scan paths that are actually directories.
+        if folder.is_dir():
+            try:
+                count += sum(
+                    1
+                    for item in folder.iterdir()
+                    if item.is_file()
+                )
+            except (OSError, PermissionError):
+                continue
 
-        if folder.exists():
-
+    # Count configured URLs safely.
+    if URL_FILE.is_file():
+        try:
             count += sum(
                 1
-                for item in folder.iterdir()
-                if item.is_file()
+                for line in URL_FILE.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                if line.strip()
             )
-
-
-    if URL_FILE.exists():
-
-        count += len([
-
-            line
-
-            for line in URL_FILE.read_text(
-                encoding="utf-8"
-            ).splitlines()
-
-            if line.strip()
-
-        ])
-
+        except (OSError, UnicodeDecodeError):
+            pass
 
     return count
+
 
 # ============================================================
 # PDF REFERENCE HELPERS
