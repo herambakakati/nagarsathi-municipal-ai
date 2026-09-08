@@ -4930,7 +4930,8 @@ ANSWER:
                                     type="button"
                                     class="reference-view-button"
                                     onclick="viewPDF(
-                                        '{pdf_base64}'
+                                        '{pdf_base64}',
+                                        {int(ref["page"])}
                                     )"
                                 >
                                     View
