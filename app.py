@@ -1,5 +1,12 @@
 import os
+import html
+import re
 import base64
+import pytesseract
+from io import BytesIO
+from copy import copy
+from openpyxl import load_workbook
+from pandas import io
 import streamlit.components.v1 as components
 from pathlib import Path
 from datetime import datetime
@@ -16,6 +23,38 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+
+# ============================================================
+# OCR / DOCUMENT READING
+# ============================================================
+
+try:
+    import pymupdf
+except ImportError:
+    pymupdf = None
+
+if pytesseract is not None:
+    possible_tesseract_paths = [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"
+    ]
+
+    for tesseract_path in possible_tesseract_paths:
+
+        if Path(
+            tesseract_path
+        ).exists():
+
+            pytesseract.pytesseract.tesseract_cmd = (
+                tesseract_path
+            )
+
+            break
+
+try:
+    from docx import Document as WordDocument
+except ImportError:
+    WordDocument = None
 
 # ============================================================
 # HTML RENDER HELPER
@@ -63,6 +102,75 @@ EXCEL_DIR = DATA_DIR / "Excel_file"
 URL_FILE = DATA_DIR / "url.txt"
 VECTORSTORE_DIR = BASE_DIR / "vectorstore"
 HERO_IMAGE = BASE_DIR / "assets" / "municipal_ai.png"
+
+# ============================================================
+# SUPPORTED SOURCE EXTENSIONS
+# ============================================================
+
+SUPPORTED_PDF_EXTENSIONS = {
+    ".pdf"
+}
+
+SUPPORTED_IMAGE_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".tif",
+    ".tiff",
+    ".bmp",
+    ".webp"
+}
+
+SUPPORTED_WORD_EXTENSIONS = {
+    ".docx"
+}
+
+SUPPORTED_EXCEL_EXTENSIONS = {
+    ".xlsx",
+    ".xlsm"
+}
+
+
+def iter_source_files():
+    """
+    Recursively find every supported municipal source file.
+
+    Folder names are never exposed to the resident.
+    """
+
+    folders = [
+        PDF_DIR,
+        WORD_DIR,
+        EXCEL_DIR
+    ]
+
+    for folder in folders:
+
+        if not folder.exists() or not folder.is_dir():
+            continue
+
+        try:
+            for path in folder.rglob("*"):
+
+                if not path.is_file():
+                    continue
+
+                suffix = path.suffix.lower()
+
+                if suffix in SUPPORTED_PDF_EXTENSIONS:
+                    yield path, "pdf"
+
+                elif suffix in SUPPORTED_IMAGE_EXTENSIONS:
+                    yield path, "image"
+
+                elif suffix in SUPPORTED_WORD_EXTENSIONS:
+                    yield path, "word"
+
+                elif suffix in SUPPORTED_EXCEL_EXTENSIONS:
+                    yield path, "excel"
+
+        except (OSError, PermissionError):
+            continue
 
 
 # ============================================================
@@ -3512,27 +3620,19 @@ section[data-testid="stSidebar"]
 # ============================================================
 
 def count_sources():
+
     count = 0
 
-    for folder in [
-        PDF_DIR,
-        WORD_DIR,
-        EXCEL_DIR
-    ]:
-        # Only scan paths that are actually directories.
-        if folder.is_dir():
-            try:
-                count += sum(
-                    1
-                    for item in folder.iterdir()
-                    if item.is_file()
-                )
-            except (OSError, PermissionError):
-                continue
+    for path, file_type in iter_source_files():
+
+        if path.is_file():
+            count += 1
 
     # Count configured URLs safely.
     if URL_FILE.is_file():
+
         try:
+
             count += sum(
                 1
                 for line in URL_FILE.read_text(
@@ -3540,7 +3640,11 @@ def count_sources():
                 ).splitlines()
                 if line.strip()
             )
-        except (OSError, UnicodeDecodeError):
+
+        except (
+            OSError,
+            UnicodeDecodeError
+        ):
             pass
 
     return count
@@ -3569,6 +3673,1123 @@ def get_pdf_path(source_file):
 
     return None
 
+# ============================================================
+# SOURCE / SERVICE HELPERS
+# ============================================================
+
+SERVICE_CONFIG = {
+    "Property tax": {
+        "keywords": [
+            "property tax",
+            "holding tax",
+            "house tax",
+            "property assessment",
+            "assessment",
+            "annual value",
+            "tax demand",
+            "tax payment",
+            "mutation"
+        ]
+    },
+
+    "Building permission": {
+        "keywords": [
+            "building permission",
+            "building permit",
+            "building plan",
+            "construction",
+            "construction work",
+            "building rules",
+            "commencement",
+            "completion certificate",
+            "completion of building",
+            "development permission"
+        ]
+    },
+
+    "Trade license": {
+        "keywords": [
+            "trade license",
+            "trade licence",
+            "business license",
+            "business licence",
+            "trade permit",
+            "trade registration",
+            "shop license",
+            "shop licence",
+            "commercial license",
+            "commercial licence",
+            "license renewal",
+            "licence renewal"
+        ]
+    },
+
+    "Electricity connection": {
+        "keywords": [
+            "electricity connection",
+            "electrical connection",
+            "electric connection",
+            "power connection",
+            "electricity service",
+            "electrical service",
+            "electricity supply"
+        ]
+    },
+
+    "Sanitation": {
+        "keywords": [
+            "sanitation",
+            "latrine",
+            "urinal",
+            "sewage",
+            "sewer",
+            "waste",
+            "drainage",
+            "cleanliness",
+            "hygiene",
+            "drinking water",
+            "washing facilities"
+        ]
+    },
+
+    "Birth certificate": {
+        "keywords": [
+            "birth certificate",
+            "birth registration",
+            "registration of birth",
+            "birth record",
+            "certificate of birth",
+            "date of birth"
+        ]
+    }
+}
+
+
+def get_source_path(metadata):
+    """
+    Resolve the actual uploaded source file.
+    """
+
+    source_file = str(
+        metadata.get(
+            "source_file",
+            ""
+        )
+    ).strip()
+
+    if not source_file:
+        return None
+
+    if source_file.startswith(
+        ("http://", "https://")
+    ):
+        return None
+
+    # --------------------------------------------------------
+    # 1. USE EXACT STORED PATH
+    # --------------------------------------------------------
+
+    stored_path = metadata.get(
+        "source_path"
+    )
+
+    if stored_path:
+        path = Path(
+            str(stored_path)
+        )
+
+        if (
+            path.exists()
+            and path.is_file()
+        ):
+            return path
+
+    # --------------------------------------------------------
+    # 2. FALLBACK TO FILE TYPE
+    # --------------------------------------------------------
+
+    file_type = str(
+        metadata.get(
+            "file_type",
+            ""
+        )
+    ).strip().lower()
+
+    folder_map = {
+        "pdf": PDF_DIR,
+        "scanned pdf": PDF_DIR,
+        "image": PDF_DIR,
+        "word": WORD_DIR,
+        "excel": EXCEL_DIR
+    }
+
+    folder = folder_map.get(
+        file_type
+    )
+
+    if folder is None:
+        return None
+
+    candidate = (
+        folder /
+        Path(source_file).name
+    )
+
+    if (
+        candidate.exists()
+        and candidate.is_file()
+    ):
+        return candidate
+
+    return None
+
+
+def get_excel_sheet_name(
+    source_path,
+    requested_sheet=None
+):
+    """
+    Resolve the exact Excel worksheet used by the
+    retrieved evidence.
+    """
+
+    if not source_path:
+        return None
+
+    try:
+
+        keep_vba = (
+            source_path.suffix.lower()
+            == ".xlsm"
+        )
+
+        workbook = load_workbook(
+            source_path,
+            read_only=True,
+            data_only=False,
+            keep_vba=keep_vba
+        )
+
+        sheet_names = workbook.sheetnames
+
+        if not sheet_names:
+            return None
+
+        if requested_sheet:
+
+            requested = str(
+                requested_sheet
+            ).strip().lower()
+
+            for sheet_name in sheet_names:
+
+                if (
+                    str(sheet_name)
+                    .strip()
+                    .lower()
+                    == requested
+                ):
+                    return sheet_name
+
+        return sheet_names[0]
+
+    except Exception:
+        return None
+
+
+def create_excel_sheet_download(
+    source_path,
+    requested_sheet=None
+):
+    """
+    Create an Excel workbook containing ONLY
+    the required worksheet.
+    """
+
+    if not source_path:
+        return None, None
+
+    try:
+
+        keep_vba = (
+            source_path.suffix.lower()
+            == ".xlsm"
+        )
+
+        workbook = load_workbook(
+            source_path,
+            read_only=False,
+            data_only=False,
+            keep_vba=keep_vba
+        )
+
+        selected_sheet = get_excel_sheet_name(
+            source_path,
+            requested_sheet
+        )
+
+        if not selected_sheet:
+            return None, None
+
+        # Delete every worksheet except
+        # the worksheet required by the reference.
+        for sheet_name in list(
+            workbook.sheetnames
+        ):
+            if sheet_name != selected_sheet:
+                del workbook[sheet_name]
+
+        output = BytesIO()
+
+        workbook.save(
+            output
+        )
+
+        output.seek(0)
+
+        return (
+            output.getvalue(),
+            selected_sheet
+        )
+
+    except Exception:
+        return None, None
+
+
+def create_excel_sheet_html(
+    source_path,
+    requested_sheet=None
+):
+    """
+    Create a browser-viewable HTML representation
+    of ONLY the required Excel worksheet.
+    """
+
+    if not source_path:
+        return None, None
+
+    try:
+
+        workbook = load_workbook(
+            source_path,
+            read_only=True,
+            data_only=False
+        )
+
+        selected_sheet = get_excel_sheet_name(
+            source_path,
+            requested_sheet
+        )
+
+        if not selected_sheet:
+            return None, None
+
+        worksheet = workbook[
+            selected_sheet
+        ]
+
+        rows_html = []
+
+        for row in worksheet.iter_rows(
+            values_only=True
+        ):
+
+            cells = []
+
+            for value in row:
+
+                if value is None:
+                    value = ""
+
+                cells.append(
+                    "<td>"
+                    + html.escape(
+                        str(value)
+                    )
+                    + "</td>"
+                )
+
+            rows_html.append(
+                "<tr>"
+                + "".join(cells)
+                + "</tr>"
+            )
+
+        html_document = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+
+<title>
+{html.escape(selected_sheet)}
+</title>
+
+<style>
+
+body {{
+    margin: 0;
+    padding: 24px;
+    background: #071126;
+    color: #E8ECF7;
+    font-family:
+        Inter,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+}}
+
+h2 {{
+    margin: 0 0 18px 0;
+    font-size: 20px;
+}}
+
+.sheet-wrapper {{
+    overflow: auto;
+    max-width: 100%;
+    border:
+        1px solid
+        rgba(78, 104, 235, 0.45);
+    border-radius: 10px;
+}}
+
+table {{
+    border-collapse: collapse;
+    width: max-content;
+    min-width: 100%;
+    background: #091833;
+}}
+
+td {{
+    border:
+        1px solid
+        rgba(65, 91, 155, 0.30);
+    padding: 8px 10px;
+    white-space: nowrap;
+    font-size: 13px;
+}}
+
+tr:nth-child(even) {{
+    background: rgba(20, 38, 72, 0.45);
+}}
+
+</style>
+</head>
+
+<body>
+
+<h2>
+{html.escape(selected_sheet)}
+</h2>
+
+<div class="sheet-wrapper">
+
+<table>
+
+<tbody>
+
+{"".join(rows_html)}
+
+</tbody>
+
+</table>
+
+</div>
+
+</body>
+</html>
+"""
+
+        return (
+            html_document,
+            selected_sheet
+        )
+
+    except Exception:
+        return None, None
+
+def service_relevance(
+    doc,
+    service_name
+):
+    """
+    Strictly check whether a document belongs
+    to the selected municipal service.
+    """
+
+    if not service_name:
+        return True
+
+    metadata = doc.metadata or {}
+
+    haystack = " ".join([
+        str(
+            metadata.get(
+                "source_file",
+                ""
+            )
+        ),
+        str(
+            metadata.get(
+                "document_title",
+                ""
+            )
+        ),
+        str(
+            metadata.get(
+                "title",
+                ""
+            )
+        ),
+        str(
+            metadata.get(
+                "heading",
+                ""
+            )
+        ),
+        str(
+            doc.page_content or ""
+        )
+    ]).lower()
+
+    keywords = SERVICE_CONFIG.get(
+        service_name,
+        {}
+    ).get(
+        "keywords",
+        []
+    )
+
+    keyword_hits = sum(
+        1
+        for keyword in keywords
+        if keyword.lower() in haystack
+    )
+
+    return keyword_hits >= 1
+
+def query_relevance(
+    doc,
+    query
+):
+    """
+    Strict lexical relevance check.
+
+    A document must contain meaningful terms from
+    the resident's question.
+
+    This prevents unrelated municipal documents
+    from being used merely because they contain
+    one common word.
+    """
+
+    if not query:
+        return True
+
+    metadata = doc.metadata or {}
+
+    text = " ".join([
+        str(
+            doc.page_content or ""
+        ),
+        str(
+            metadata.get(
+                "heading",
+                ""
+            )
+        ),
+        str(
+            metadata.get(
+                "title",
+                ""
+            )
+        ),
+        str(
+            metadata.get(
+                "document_title",
+                ""
+            )
+        )
+    ]).lower()
+
+    query_words = re.findall(
+        r"[a-zA-Z]{3,}",
+        query.lower()
+    )
+
+    stop_words = {
+        "what",
+        "how",
+        "when",
+        "where",
+        "which",
+        "does",
+        "with",
+        "from",
+        "this",
+        "that",
+        "for",
+        "the",
+        "are",
+        "can",
+        "please",
+        "tell",
+        "about",
+        "give",
+        "information",
+        "need",
+        "want",
+        "would",
+        "could",
+        "should",
+        "tell",
+        "me"
+    }
+
+    meaningful_words = [
+        word
+        for word in query_words
+        if word not in stop_words
+    ]
+
+    meaningful_words = list(
+        dict.fromkeys(
+            meaningful_words
+        )
+    )
+
+    if not meaningful_words:
+        return True
+
+    hits = sum(
+        1
+        for word in meaningful_words
+        if re.search(
+            rf"\b{re.escape(word)}\b",
+            text
+        )
+    )
+
+    # Single-term questions can legitimately have
+    # one meaningful match.
+    if len(meaningful_words) == 1:
+        return hits >= 1
+
+    # For multi-term questions require at least
+    # two matching terms OR 50% of meaningful terms.
+    required_hits = max(
+        2,
+        int(
+            len(meaningful_words)
+            * 0.50
+        )
+    )
+
+    return hits >= required_hits
+
+def normalize_source_identity(source_file):
+    """
+    Normalize a source filename so visually different versions
+    of the same filename are treated as the same document.
+
+    Example:
+        BUILDING RULES.pdf
+        Building_Rules.pdf
+
+    Both become the same source identity.
+    """
+
+    source_file = str(
+        source_file or ""
+    ).strip()
+
+    if not source_file:
+        return ""
+
+    name = Path(source_file).name
+
+    stem = Path(name).stem.lower()
+
+    # Remove spaces, underscores, hyphens and punctuation.
+    stem = re.sub(
+        r"[^a-z0-9]+",
+        "",
+        stem
+    )
+
+    suffix = Path(name).suffix.lower()
+
+    return f"{stem}{suffix}"
+
+
+def normalize_reference_location(value):
+    """
+    Normalize page/sheet values for duplicate detection.
+    """
+
+    if value is None:
+        return ""
+
+    return re.sub(
+        r"\s+",
+        " ",
+        str(value).strip().lower()
+    )
+
+def get_reference_key(doc):
+
+    metadata = doc.metadata or {}
+
+    source_file = normalize_source_identity(
+        metadata.get(
+            "source_file",
+            ""
+        )
+    )
+
+    page = metadata.get(
+        "page"
+    )
+
+    sheet = metadata.get(
+        "sheet"
+    )
+
+    if page is not None:
+
+        location = (
+            "page:",
+            normalize_reference_location(
+                page
+            )
+        )
+
+    elif sheet:
+
+        location = (
+            "sheet:",
+            normalize_reference_location(
+                sheet
+            )
+        )
+
+    else:
+
+        location = (
+            "document:",
+            ""
+        )
+
+    return (
+        source_file,
+        location
+    )
+
+
+
+def make_reference_snippet(
+    doc,
+    max_chars=260
+):
+    """
+    Create a concise, relevant excerpt for the reference panel.
+
+    The reference snippet comes directly from the retrieved
+    document chunk, so it stays relevant to the evidence used
+    for the answer.
+    """
+
+    if doc is None:
+        return ""
+
+    text = str(
+        getattr(
+            doc,
+            "page_content",
+            ""
+        ) or ""
+    ).strip()
+
+    if not text:
+        return ""
+
+    # Normalize excessive whitespace.
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    ).strip()
+
+    if len(text) <= max_chars:
+        return text
+
+    # Do not cut in the middle of a word.
+    snippet = text[:max_chars].rsplit(
+        " ",
+        1
+    )[0].strip()
+
+    if not snippet:
+        snippet = text[:max_chars].strip()
+
+    return f"{snippet}…"
+
+
+def build_top_references(
+    scored_docs,
+    limit=10
+):
+    """
+    Build unique references.
+
+    Rules:
+    1. Same document + same page = one reference.
+    2. Same document + same sheet = one reference.
+    3. Different pages are separate references.
+    4. Duplicate references are removed.
+    5. Final display order is ascending:
+       filename -> page/sheet.
+    """
+
+    references = []
+    seen_locations = set()
+
+    for doc, score in scored_docs:
+
+        metadata = doc.metadata or {}
+
+        source_file = str(
+            metadata.get(
+                "source_file",
+                ""
+            )
+        ).strip()
+
+        if not source_file:
+            continue
+
+        reference_key = get_reference_key(
+            doc
+        )
+
+        if reference_key in seen_locations:
+            continue
+
+        seen_locations.add(
+            reference_key
+        )
+
+        references.append({
+            "doc": doc,
+            "score": float(score),
+            "snippet": make_reference_snippet(
+                doc
+            )
+        })
+
+    # --------------------------------------------------------
+    # ASCENDING REFERENCE ORDER
+    # --------------------------------------------------------
+
+    def reference_sort_key(ref):
+
+        metadata = (
+            ref["doc"].metadata
+            or {}
+        )
+
+        filename = Path(
+            str(
+                metadata.get(
+                    "source_file",
+                    ""
+                )
+            )
+        ).name.lower()
+
+        page = metadata.get(
+            "page"
+        )
+
+        sheet = str(
+            metadata.get(
+                "sheet",
+                ""
+            )
+        ).lower()
+
+        try:
+            page_number = int(page)
+        except Exception:
+            page_number = 999999
+
+        return (
+            filename,
+            page_number,
+            sheet
+        )
+
+    references.sort(
+        key=reference_sort_key
+    )
+
+    return references[:limit]
+
+def build_direct_references(
+    scored_docs,
+    question,
+    answer,
+    limit=5
+):
+    """
+    Select only references that directly support
+    the resident's question and final answer.
+    """
+
+    if not scored_docs:
+        return []
+
+    question = str(
+        question or ""
+    ).lower()
+
+    answer = str(
+        answer or ""
+    ).lower()
+
+    stop_words = {
+        "what", "how", "when", "where", "which",
+        "does", "with", "from", "this", "that",
+        "for", "the", "are", "can", "please",
+        "tell", "about", "give", "information",
+        "need", "want", "would", "could", "should",
+        "me", "you", "your", "is", "of", "to",
+        "in", "on", "and", "or", "a", "an",
+        "be", "it", "as", "by", "do"
+    }
+
+    def extract_words(text):
+
+        return list(
+            dict.fromkeys(
+                word
+                for word in re.findall(
+                    r"[a-zA-Z]{3,}",
+                    text
+                )
+                if word not in stop_words
+            )
+        )
+
+    question_words = extract_words(
+        question
+    )
+
+    answer_words = extract_words(
+        answer
+    )
+
+    references = []
+    seen_locations = set()
+
+    for item in scored_docs:
+
+        # --------------------------------------------------------
+        # SUPPORT BOTH:
+        #   1. (Document, score)
+        #   2. Document
+        # --------------------------------------------------------
+
+        if (
+            isinstance(item, tuple)
+            and len(item) >= 1
+        ):
+            doc = item[0]
+        else:
+            doc = item
+
+        if doc is None:
+            continue
+
+        metadata = doc.metadata or {}
+
+        
+        source_file = str(
+            metadata.get(
+                "source_file",
+                ""
+            )
+        ).strip()
+
+        if not source_file:
+            continue
+
+        reference_key = get_reference_key(
+            doc
+        )
+
+        if reference_key in seen_locations:
+            continue
+
+        text = " ".join([
+            str(
+                doc.page_content or ""
+            ),
+            str(
+                metadata.get(
+                    "heading",
+                    ""
+                )
+            ),
+            str(
+                metadata.get(
+                    "title",
+                    ""
+                )
+            ),
+            str(
+                metadata.get(
+                    "document_title",
+                    ""
+                )
+            )
+        ]).lower()
+
+        # --------------------------------------------------------
+        # QUESTION MATCH
+        # --------------------------------------------------------
+
+        question_hits = sum(
+            1
+            for word in question_words
+            if re.search(
+                rf"\b{re.escape(word)}\b",
+                text
+            )
+        )
+
+        # --------------------------------------------------------
+        # ANSWER MATCH
+        # --------------------------------------------------------
+
+        answer_hits = sum(
+            1
+            for word in answer_words
+            if re.search(
+                rf"\b{re.escape(word)}\b",
+                text
+            )
+        )
+
+        # --------------------------------------------------------
+        # DIRECT RELEVANCE
+        # --------------------------------------------------------
+
+        direct_score = (
+            question_hits * 3
+            + answer_hits * 2
+        )
+
+        # Ignore weak / unrelated documents.
+        if direct_score < 5:
+            continue
+
+        references.append({
+            "doc": doc,
+            "score": direct_score,
+            "question_hits": question_hits,
+            "answer_hits": answer_hits,
+            "snippet": make_reference_snippet(
+                doc
+            )
+        })
+
+        seen_locations.add(
+            reference_key
+        )
+
+    if not references:
+        return []
+
+    # ------------------------------------------------------------
+    # STRONGEST SUPPORT FIRST
+    # ------------------------------------------------------------
+
+    references.sort(
+        key=lambda ref: (
+            -ref["score"],
+            -ref["question_hits"],
+            -ref["answer_hits"]
+        )
+    )
+
+    # ------------------------------------------------------------
+    # REMOVE WEAK REFERENCES
+    # ------------------------------------------------------------
+
+    best_score = references[0]["score"]
+
+    references = [
+        ref
+        for ref in references
+        if ref["score"] >= max(
+            5,
+            best_score - 4
+        )
+    ]
+
+    # Maximum 5 directly relevant references.
+    references = references[:limit]
+
+    # ------------------------------------------------------------
+    # FINAL DISPLAY ORDER
+    # filename -> page -> sheet
+    # ------------------------------------------------------------
+
+    def reference_sort_key(ref):
+
+        metadata = (
+            ref["doc"].metadata
+            or {}
+        )
+
+        filename = Path(
+            str(
+                metadata.get(
+                    "source_file",
+                    ""
+                )
+            )
+        ).name.lower()
+
+        page = metadata.get(
+            "page"
+        )
+
+        sheet = str(
+            metadata.get(
+                "sheet",
+                ""
+            )
+        ).lower()
+
+        try:
+            page_number = int(page)
+        except Exception:
+            page_number = 999999
+
+        return (
+            filename,
+            page_number,
+            sheet
+        )
+
+    references.sort(
+        key=reference_sort_key
+    )
+
+    return references
 
 def get_pdf_page_number(page):
 
@@ -3668,6 +4889,454 @@ def get_last_updated():
     ).strftime(
         "%b %d, %Y"
     )
+
+# ============================================================
+# ROBUST PDF / IMAGE / DOCUMENT TEXT EXTRACTION
+# ============================================================
+
+@st.cache_data(show_spinner=False)
+def extract_pdf_pages(pdf_path_string):
+    """
+    Read every PDF page.
+
+    Priority:
+    1. Native PDF text extraction.
+    2. OCR for image/scanned PDF pages.
+
+    Returns:
+        [
+            {
+                "page": 1,
+                "text": "..."
+            },
+            ...
+        ]
+    """
+
+    pdf_path = Path(pdf_path_string)
+
+    if not pdf_path.exists() or not pdf_path.is_file():
+        return []
+
+    pages = []
+
+    # --------------------------------------------------------
+    # FIRST: NORMAL PDF TEXT
+    # --------------------------------------------------------
+
+    try:
+
+        reader = PdfReader(str(pdf_path))
+
+        for page_number, page in enumerate(
+            reader.pages,
+            start=1
+        ):
+
+            text = ""
+
+            try:
+                text = page.extract_text() or ""
+            except Exception:
+                text = ""
+
+            text = " ".join(
+                str(text).split()
+            ).strip()
+
+            pages.append({
+                "page": page_number,
+                "text": text
+            })
+
+    except Exception:
+        pages = []
+
+    # --------------------------------------------------------
+    # CHECK WHETHER OCR IS REQUIRED
+    # --------------------------------------------------------
+
+    usable_text_pages = sum(
+        1
+        for item in pages
+        if len(item["text"]) >= 20
+    )
+
+    total_pages = len(pages)
+
+    # If most pages already contain text,
+    # do not unnecessarily OCR them.
+    if (
+        total_pages > 0
+        and usable_text_pages >= max(
+            1,
+            int(total_pages * 0.60)
+        )
+    ):
+        return pages
+
+    # --------------------------------------------------------
+    # OCR FALLBACK FOR SCANNED / IMAGE PDF
+    # --------------------------------------------------------
+
+    if pymupdf is None or pytesseract is None:
+        return pages
+
+    try:
+
+        pdf = pymupdf.open(
+            str(pdf_path)
+        )
+
+        ocr_pages = []
+
+        for page_index in range(
+            len(pdf)
+        ):
+
+            page_number = page_index + 1
+
+            existing_text = ""
+
+            if page_index < len(pages):
+                existing_text = pages[
+                    page_index
+                ].get(
+                    "text",
+                    ""
+                )
+
+            # Keep good native text.
+            if len(existing_text) >= 20:
+
+                ocr_pages.append({
+                    "page": page_number,
+                    "text": existing_text
+                })
+
+                continue
+
+            # ------------------------------------------------
+            # RENDER PAGE
+            # ------------------------------------------------
+
+            page = pdf.load_page(
+                page_index
+            )
+
+            pix = page.get_pixmap(
+                matrix=pymupdf.Matrix(
+                    2.0,
+                    2.0
+                ),
+                alpha=False
+            )
+
+            image_bytes = pix.tobytes(
+                "png"
+            )
+
+            image = Image.open(
+                io.BytesIO(
+                    image_bytes
+                )
+            )
+
+            # ------------------------------------------------
+            # OCR
+            # ------------------------------------------------
+
+            try:
+
+                ocr_text = pytesseract.image_to_string(
+                    image,
+                    config="--psm 6"
+                )
+
+            except Exception:
+
+                ocr_text = ""
+
+            ocr_text = " ".join(
+                str(ocr_text).split()
+            ).strip()
+
+            ocr_pages.append({
+                "page": page_number,
+                "text": ocr_text
+            })
+
+        pdf.close()
+
+        return ocr_pages
+
+    except Exception:
+        return pages
+
+
+@st.cache_data(show_spinner=False)
+def extract_image_text(image_path_string):
+    """
+    OCR a standalone image document.
+    """
+
+    image_path = Path(
+        image_path_string
+    )
+
+    if (
+        not image_path.exists()
+        or not image_path.is_file()
+        or pytesseract is None
+    ):
+        return ""
+
+    try:
+
+        image = Image.open(
+            image_path
+        )
+
+        text = pytesseract.image_to_string(
+            image,
+            config="--psm 6"
+        )
+
+        return " ".join(
+            str(text).split()
+        ).strip()
+
+    except Exception:
+        return ""
+
+
+@st.cache_data(show_spinner=False)
+def extract_word_text(word_path_string):
+
+    if WordDocument is None:
+        return ""
+
+    path = Path(
+        word_path_string
+    )
+
+    if not path.exists():
+        return ""
+
+    try:
+
+        document = WordDocument(
+            str(path)
+        )
+
+        parts = []
+
+        for paragraph in document.paragraphs:
+
+            text = " ".join(
+                paragraph.text.split()
+            ).strip()
+
+            if text:
+                parts.append(text)
+
+        return "\n".join(parts)
+
+    except Exception:
+        return ""
+
+
+@st.cache_data(show_spinner=False)
+def extract_excel_text(excel_path_string):
+
+    path = Path(
+        excel_path_string
+    )
+
+    if not path.exists():
+        return []
+
+    try:
+
+        keep_vba = (
+            path.suffix.lower()
+            == ".xlsm"
+        )
+
+        workbook = load_workbook(
+            path,
+            read_only=True,
+            data_only=True,
+            keep_vba=keep_vba
+        )
+
+        results = []
+
+        for worksheet in workbook.worksheets:
+
+            rows = []
+
+            for row in worksheet.iter_rows(
+                values_only=True
+            ):
+
+                values = []
+
+                for value in row:
+
+                    if value is None:
+                        continue
+
+                    value = str(value).strip()
+
+                    if value:
+                        values.append(value)
+
+                if values:
+                    rows.append(
+                        " | ".join(values)
+                    )
+
+            if rows:
+
+                results.append({
+                    "sheet": worksheet.title,
+                    "text": "\n".join(rows)
+                })
+
+        workbook.close()
+
+        return results
+
+    except Exception:
+        return []
+
+# ============================================================
+# BUILD COMPLETE DOCUMENT CORPUS
+# ============================================================
+
+@st.cache_data(show_spinner=False)
+def load_all_source_documents():
+    """
+    Read every supported municipal source.
+
+    Every returned item keeps:
+        source_file
+        source_path
+        file_type
+        page / sheet
+        page_content
+    """
+
+    documents = []
+
+    for path, file_type in iter_source_files():
+
+        # ====================================================
+        # PDF
+        # ====================================================
+
+        if file_type == "pdf":
+
+            pages = extract_pdf_pages(
+                str(path)
+            )
+
+            for page_data in pages:
+
+                text = str(
+                    page_data.get(
+                        "text",
+                        ""
+                    )
+                ).strip()
+
+                if len(text) < 10:
+                    continue
+
+                documents.append({
+                    "source_file": path.name,
+                    "source_path": str(path),
+                    "file_type": "pdf",
+                    "page": page_data["page"],
+                    "sheet": None,
+                    "page_content": text
+                })
+
+        # ====================================================
+        # IMAGE
+        # ====================================================
+
+        elif file_type == "image":
+
+            text = extract_image_text(
+                str(path)
+            )
+
+            if text:
+
+                documents.append({
+                    "source_file": path.name,
+                    "source_path": str(path),
+                    "file_type": "image",
+                    "page": 1,
+                    "sheet": None,
+                    "page_content": text
+                })
+
+        # ====================================================
+        # WORD
+        # ====================================================
+
+        elif file_type == "word":
+
+            text = extract_word_text(
+                str(path)
+            )
+
+            if text:
+
+                documents.append({
+                    "source_file": path.name,
+                    "source_path": str(path),
+                    "file_type": "word",
+                    "page": None,
+                    "sheet": None,
+                    "page_content": text
+                })
+
+        # ====================================================
+        # EXCEL
+        # ====================================================
+
+        elif file_type == "excel":
+
+            sheets = extract_excel_text(
+                str(path)
+            )
+
+            for sheet_data in sheets:
+
+                text = str(
+                    sheet_data.get(
+                        "text",
+                        ""
+                    )
+                ).strip()
+
+                if len(text) < 5:
+                    continue
+
+                documents.append({
+                    "source_file": path.name,
+                    "source_path": str(path),
+                    "file_type": "excel",
+                    "page": None,
+                    "sheet": sheet_data["sheet"],
+                    "page_content": text
+                })
+
+    return documents
 
 # ============================================================
 # EXTRACT DOCUMENT TITLE FROM PDF
@@ -4073,8 +5742,6 @@ with st.sidebar:
 
 hero_image_base64 = None
 
-from io import BytesIO
-
 
 def load_original_hero_image(image_path):
     """
@@ -4189,6 +5856,23 @@ else:
         "assets/municipal_ai.png"
     )
 
+# ============================================================
+# SELECTED SERVICE / DOCUMENT
+# ============================================================
+
+if "selected_service" not in st.session_state:
+    st.session_state["selected_service"] = None
+
+if "selected_document" not in st.session_state:
+    st.session_state["selected_document"] = None
+
+if "active_query" not in st.session_state:
+    st.session_state["active_query"] = ""
+
+if "run_search" not in st.session_state:
+    st.session_state["run_search"] = False
+
+    
 
 # ============================================================
 # QUESTION PANEL
@@ -4283,6 +5967,7 @@ with st.container(key="question_panel"):
             "🎂  Birth certificate"
         ]
 
+    
         # --------------------------------------------------------
         # CREATE SIX BUTTONS
         # --------------------------------------------------------
@@ -4307,145 +5992,604 @@ with st.container(key="question_panel"):
                     )
 
                 if clicked:
-                    query = suggestion.split(
-                        "  ",
-                        1
-                    )[-1]
 
+                    selected_service = (
+                        suggestion
+                        .split(
+                            "  ",
+                            1
+                        )[-1]
+                        .strip()
+                    )
 
+                    st.session_state[
+                        "selected_service"
+                    ] = selected_service
+
+                    st.session_state[
+                        "selected_document"
+                    ] = None
+
+                    # Store the suggestion as the active question.
+                    st.session_state[
+                        "active_query"
+                    ] = selected_service
+
+                    # Mark that a search should run.
+                    st.session_state[
+                        "run_search"
+                    ] = True
     # --------------------------------------------------------
     # SEARCH BUTTON
     # --------------------------------------------------------
 
     with search_col:
-
         with st.container(
             key="search_button"
         ):
-
             search_clicked = st.button(
                 "➤",
                 use_container_width=True
             )
+            if search_clicked:
+                if query.strip():
+                    st.session_state[
+                        "active_query"
+                    ] = query.strip()
+
+                    st.session_state[
+                        "selected_service"
+                    ] = None
+
+                    st.session_state[
+                        "run_search"
+                    ] = True
+
+# ============================================================
+# STANDARD NO-INFORMATION RESPONSE
+# ============================================================
+
+NO_INFORMATION_MESSAGE = (
+    "I’m sorry, but no information is available "
+    "in the municipal documents for this question."
+)
 
 # ============================================================
 # QUESTION PROCESSING
 # ============================================================
 
-if query:
+active_service = st.session_state.get(
+    "selected_service"
+)
 
-    if not (
-        VECTORSTORE_DIR /
-        "index.faiss"
-    ).exists():
+typed_query = query.strip()
 
-        st.error(
-            "Knowledge Base is not available."
-        )
+# Do not overwrite a service suggestion with
+# an old text-input value.
+if (
+    typed_query
+    and not st.session_state.get(
+        "selected_service"
+    )
+):
 
-        st.info(
-            "Place your files inside the data folders "
-            "and run: python rag_build.py"
-        )
+    st.session_state[
+        "active_query"
+    ] = typed_query
 
-        st.stop()
+    st.session_state[
+        "run_search"
+    ] = True
 
+
+active_query = st.session_state.get(
+    "active_query",
+    ""
+).strip()
+
+
+run_search = st.session_state.get(
+    "run_search",
+    False
+)
+
+# ============================================================
+# QUESTION PROCESSING
+# ============================================================
+
+if run_search and active_query:
 
     try:
 
-        # ----------------------------------------------------
-        # LOAD DATABASE
-        # ----------------------------------------------------
-
-        vectorstore = get_vectorstore()
-
-
-        # ----------------------------------------------------
-        # RETRIEVER
-        # ----------------------------------------------------
-
-        retriever = vectorstore.as_retriever(
-
-            search_kwargs={
-                "k": 6
-            }
-
-        )
-
-
-        # ----------------------------------------------------
-        # SEARCH
-        # ----------------------------------------------------
+        # ========================================================
+        # LOAD ALL MUNICIPAL SOURCE DOCUMENTS
+        # ========================================================
 
         with st.spinner(
-            "Searching official municipal documents..."
+            "Searching all official municipal documents..."
         ):
 
-            docs = retriever.invoke(
-                query
+            raw_documents = (
+                load_all_source_documents()
             )
 
+        # --------------------------------------------------------
+        # SAFETY CHECK
+        # --------------------------------------------------------
 
-        # ----------------------------------------------------
-        # BUILD CONTEXT
-        # ----------------------------------------------------
+        if not raw_documents:
 
-        context_parts = []
-
-
-        for index, doc in enumerate(
-            docs,
-            start=1
-        ):
-
-            metadata = doc.metadata
-
-
-            source = metadata.get(
-                "source_file",
-                "Unknown source"
+            clean_response = (
+                NO_INFORMATION_MESSAGE
             )
 
+            insufficient_information = True
+            top_references = []
+            docs = []
 
-            file_type = metadata.get(
-                "file_type",
-                "Unknown"
-            )
+        else:
 
+            # ====================================================
+            # CREATE LANGCHAIN DOCUMENT OBJECTS
+            # ====================================================
 
-            page = metadata.get(
-                "page"
-            )
+            from langchain_core.documents import Document
 
+            indexed_documents = []
 
-            sheet = metadata.get(
-                "sheet"
-            )
+            for item in raw_documents:
 
+                indexed_documents.append(
+                    Document(
+                        page_content=str(
+                            item.get(
+                                "page_content",
+                                ""
+                            )
+                        ),
+                        metadata={
+                            "source_file":
+                                item.get(
+                                    "source_file"
+                                ),
 
-            source_location = source
+                            "source_path":
+                                item.get(
+                                    "source_path"
+                                ),
 
+                            "file_type":
+                                item.get(
+                                    "file_type"
+                                ),
 
-            if page:
+                            "page":
+                                item.get(
+                                    "page"
+                                ),
 
-                source_location += (
-                    f" | Page {page}"
+                            "sheet":
+                                item.get(
+                                    "sheet"
+                                ),
+
+                            "heading":
+                                item.get(
+                                    "heading",
+                                    ""
+                                ),
+
+                            "title":
+                                item.get(
+                                    "title",
+                                    ""
+                                ),
+
+                            "document_title":
+                                item.get(
+                                    "document_title",
+                                    ""
+                                )
+                        }
+                    )
                 )
 
+            # ====================================================
+            # SELECTED SERVICE
+            # ====================================================
 
-            if sheet:
+            active_service = (
+                st.session_state.get(
+                    "selected_service"
+                )
+            )
 
-                source_location += (
-                    f" | Sheet {sheet}"
+            # ====================================================
+            # FIND RELEVANT DOCUMENTS
+            #
+            # IMPORTANT:
+            # When a suggestion is clicked, search by the
+            # service's complete keyword set instead of treating
+            # "Property tax", "Trade license", etc. as a strict
+            # literal phrase.
+            # ====================================================
+
+            document_results = []
+
+            if active_service:
+
+                service_keywords = (
+                    SERVICE_CONFIG.get(
+                        active_service,
+                        {}
+                    ).get(
+                        "keywords",
+                        []
+                    )
                 )
 
+                for doc in indexed_documents:
 
-            context_parts.append(
+                    if not service_relevance(
+                        doc,
+                        active_service
+                    ):
+                        continue
 
-                f"""
-[Source {index}]
+                    metadata = (
+                        doc.metadata or {}
+                    )
 
-Source:
+                    text = " ".join([
+                        str(
+                            metadata.get(
+                                "source_file",
+                                ""
+                            )
+                        ),
+                        str(
+                            metadata.get(
+                                "document_title",
+                                ""
+                            )
+                        ),
+                        str(
+                            metadata.get(
+                                "title",
+                                ""
+                            )
+                        ),
+                        str(
+                            metadata.get(
+                                "heading",
+                                ""
+                            )
+                        ),
+                        str(
+                            doc.page_content or ""
+                        )
+                    ]).lower()
+
+                    keyword_hits = 0
+
+                    for keyword in service_keywords:
+
+                        if (
+                            keyword.lower()
+                            in text
+                        ):
+                            keyword_hits += 1
+
+                    if keyword_hits > 0:
+
+                        # Negative score:
+                        # more keyword matches = better result.
+                        document_results.append(
+                            (
+                                doc,
+                                -float(
+                                    keyword_hits
+                                )
+                            )
+                        )
+
+            else:
+
+                # ====================================================
+                # NORMAL TYPED QUESTION
+                # ====================================================
+
+                for doc in indexed_documents:
+
+                    if query_relevance(
+                        doc,
+                        active_query
+                    ):
+
+                        metadata = (
+                            doc.metadata or {}
+                        )
+
+                        text = " ".join([
+                            str(
+                                doc.page_content or ""
+                            ),
+                            str(
+                                metadata.get(
+                                    "heading",
+                                    ""
+                                )
+                            ),
+                            str(
+                                metadata.get(
+                                    "title",
+                                    ""
+                                )
+                            ),
+                            str(
+                                metadata.get(
+                                    "document_title",
+                                    ""
+                                )
+                            )
+                        ]).lower()
+
+                        query_words = re.findall(
+                            r"[a-zA-Z]{3,}",
+                            active_query.lower()
+                        )
+
+                        stop_words = {
+                            "what",
+                            "how",
+                            "when",
+                            "where",
+                            "which",
+                            "does",
+                            "with",
+                            "from",
+                            "this",
+                            "that",
+                            "for",
+                            "the",
+                            "are",
+                            "can",
+                            "please",
+                            "tell",
+                            "about",
+                            "give",
+                            "information",
+                            "need",
+                            "want",
+                            "would",
+                            "could",
+                            "should",
+                            "me"
+                        }
+
+                        meaningful_words = list(
+                            dict.fromkeys(
+                                word
+                                for word in query_words
+                                if word not in stop_words
+                            )
+                        )
+
+                        hits = sum(
+                            1
+                            for word
+                            in meaningful_words
+                            if re.search(
+                                rf"\b{re.escape(word)}\b",
+                                text
+                            )
+                        )
+
+                        if (
+                            len(meaningful_words) == 1
+                            and hits >= 1
+                        ):
+
+                            document_results.append(
+                                (
+                                    doc,
+                                    -float(hits)
+                                )
+                            )
+
+                        elif (
+                            len(meaningful_words) > 1
+                            and hits >= max(
+                                2,
+                                int(
+                                    len(
+                                        meaningful_words
+                                    ) * 0.50
+                                )
+                            )
+                        ):
+
+                            document_results.append(
+                                (
+                                    doc,
+                                    -float(hits)
+                                )
+                            )
+
+            # ====================================================
+            # BEST MATCHES FIRST
+            # ====================================================
+
+            document_results.sort(
+                key=lambda item: item[1]
+            )
+
+            # ====================================================
+            # NO INFORMATION
+            # ====================================================
+
+            if not document_results:
+
+                clean_response = (
+                    NO_INFORMATION_MESSAGE
+                )
+
+                insufficient_information = True
+                top_references = []
+                docs = []
+
+            else:
+
+                insufficient_information = False
+
+                # =================================================
+                # REMOVE DUPLICATE DOCUMENT LOCATIONS
+                # =================================================
+
+                unique_chunks = []
+                seen_chunks = set()
+
+                for doc, score in (
+                    document_results
+                ):
+
+                    metadata = (
+                        doc.metadata or {}
+                    )
+
+                    source_file = str(
+                        metadata.get(
+                            "source_file",
+                            ""
+                        )
+                    ).strip()
+
+                    page = metadata.get(
+                        "page"
+                    )
+
+                    sheet = metadata.get(
+                        "sheet"
+                    )
+
+                    source_identity = (
+                        normalize_source_identity(
+                            source_file
+                        )
+                    )
+
+                    chunk_key = (
+                        source_identity,
+
+                        normalize_reference_location(
+                            page
+                        ),
+
+                        normalize_reference_location(
+                            sheet
+                        ),
+
+                        " ".join(
+                            str(
+                                doc.page_content
+                                or ""
+                            ).split()
+                        ).lower()
+                    )
+
+                    if chunk_key in seen_chunks:
+                        continue
+
+                    seen_chunks.add(
+                        chunk_key
+                    )
+
+                    unique_chunks.append(
+                        (
+                            doc,
+                            score
+                        )
+                    )
+
+                # =================================================
+                # KEEP BEST EVIDENCE
+                # =================================================
+
+                answer_candidates = (
+                    unique_chunks[:30]
+                )
+
+                docs = [
+                    doc
+                    for doc, score
+                    in answer_candidates
+                ]
+
+                # =================================================
+                # BUILD REFERENCES
+                # =================================================
+
+                top_references = (
+                    build_top_references(
+                        answer_candidates,
+                        limit=10
+                    )
+                )
+                
+
+                # =================================================
+                # BUILD MODEL CONTEXT
+                # =================================================
+
+                context_parts = []
+
+                for index, doc in enumerate(
+                    docs,
+                    start=1
+                ):
+
+                    metadata = (
+                        doc.metadata or {}
+                    )
+
+                    source = metadata.get(
+                        "source_file",
+                        "Unknown source"
+                    )
+
+                    file_type = metadata.get(
+                        "file_type",
+                        "Unknown"
+                    )
+
+                    page = metadata.get(
+                        "page"
+                    )
+
+                    sheet = metadata.get(
+                        "sheet"
+                    )
+
+                    source_location = (
+                        f"File: {source}"
+                    )
+
+                    if page is not None:
+
+                        source_location += (
+                            f"\nPage: "
+                            f"{get_pdf_page_number(page)}"
+                        )
+
+                    if sheet:
+
+                        source_location += (
+                            f"\nSheet: {sheet}"
+                        )
+
+                    context_parts.append(
+                        f"""
+[Evidence {index}]
 {source_location}
 
 Type:
@@ -4454,333 +6598,200 @@ Type:
 Content:
 {doc.page_content}
 """
+                    )
 
-            )
+                context = (
+                    "\n\n".join(
+                        context_parts
+                    )
+                )
 
+                # =================================================
+                # MODEL PROMPT
+                # =================================================
 
-        context = "\n\n".join(
-            context_parts
-        )
+                prompt = (
+                    ChatPromptTemplate.from_template(
+                        """
+You are NagarSathi, a municipal help-desk assistant.
 
+Answer the resident's question using ONLY the supplied
+official municipal evidence.
 
-        # ----------------------------------------------------
-        # PROMPT
-        # ----------------------------------------------------
+IMPORTANT RULES:
 
-        prompt = ChatPromptTemplate.from_template(
+1. Read all supplied evidence before answering.
 
-            """
-You are NagarSathi, an AI assistant for a Municipal Board.
+2. Use only information directly relevant to the
+resident's question or selected municipal service.
 
-Answer the user's question using ONLY the supplied
-municipal CONTEXT.
+3. Never invent or assume:
+- fees
+- dates
+- procedures
+- documents
+- eligibility
+- rules
+- sections
+- conditions
+- contact details
+- deadlines
 
-RULES:
+4. Preserve official:
+- Act names
+- Rule names
+- section numbers
+- rule numbers
+- dates
+- fees
+- conditions
+- exceptions
+- terminology
 
-1. Never invent information.
+5. If several official documents contain relevant
+information, combine them into one clear answer.
 
-2. Never guess municipal rules, fees,
-   dates, sections or procedures.
+6. Write in simple, natural, human-friendly English.
 
-3. Do not use outside knowledge.
+7. Explain the information as a municipal help-desk
+officer would explain it to a resident.
 
-4. Preserve:
-   - Act names
-   - Section numbers
-   - Rule numbers
-   - Dates
-   - Fees
-   - Conditions
-   - Exceptions
+8. Do not use general knowledge or information outside
+the supplied municipal evidence.
 
-5. Use simple English.
+9. If the documents provide only part of the requested
+information, answer only that part.
 
-6. Use bullets where appropriate.
+10. Do not mention:
+- folders
+- vector stores
+- embeddings
+- OCR
+- retrieval
+- similarity scores
+- chunks
+- internal processing
 
-7. Do not include [Source 1], [Source 2] or any
-   other source labels in the final answer.
+11. A suggestion such as Property tax, Building permission,
+Trade license, Sanitation, or Birth certificate is only a
+search topic. It is NOT evidence.
 
-8. Source information is displayed separately by the application.
+12. When a suggestion is clicked, answer only from the
+municipal documents that contain relevant information.
 
-9. If the answer is not present in the context,
-   say exactly:
+13. If there is no relevant evidence, return exactly:
 
-"I could not find sufficient information in the
-available municipal documents to answer this question."
+NO_INFORMATION_MESSAGE
 
-10. Do not reveal internal reasoning.
-
-CONTEXT:
+OFFICIAL MUNICIPAL EVIDENCE:
 
 {context}
 
-QUESTION:
+RESIDENT'S QUESTION:
 
 {question}
 
 ANSWER:
 """
-
-        )
-
-
-        # ----------------------------------------------------
-        # MODEL
-        # ----------------------------------------------------
-
-        llm = ChatOpenAI(
-
-            model="gpt-4.1-mini",
-
-            temperature=0
-
-        )
-
-
-        chain = (
-
-            prompt
-
-            | llm
-
-            | StrOutputParser()
-
-        )
-
-
-        # ----------------------------------------------------
-        # ANSWER
-        # ----------------------------------------------------
-
-        response = chain.invoke(
-
-            {
-
-                "context":
-                    context,
-
-                "question":
-                    query
-
-            }
-
-        )
-
-
-        # ====================================================
-        # ANSWER CARD — REFERENCE DESIGN
-        # ====================================================
-
-        import html
-        import re
-
-        # ----------------------------------------------------
-        # PREPARE RESPONSE FOR HTML
-        # ----------------------------------------------------
-
-        # Remove [Source 1], [Source 2], etc.
-        # because sources are already displayed separately below.
-        clean_response = re.sub(
-            r"\[Source\s+\d+\]",
-            "",
-            response,
-            flags=re.IGNORECASE
-        )
-
-        # Remove excessive blank lines created after removing citations
-        clean_response = re.sub(
-            r"\n\s*\n+",
-            "\n",
-            clean_response
-        ).strip()
-
-        # ============================================================
-        # DETECT "NO SUFFICIENT INFORMATION" RESPONSE
-        # ============================================================
-
-        insufficient_information = (
-            "I could not find sufficient information in the "
-            "available municipal documents to answer this question."
-            in clean_response.strip()
-        )
-
-        safe_response = html.escape(clean_response)
-
-        # Preserve line breaks from the LLM response
-        safe_response = safe_response.replace("\n", "<br>")
-
-
-        # ----------------------------------------------------
-        # BUILD SOURCE DETAILS
-        # ----------------------------------------------------
-
-        source_items_html = ""
-
-        # Store PDF references separately.
-        # Streamlit buttons will be rendered after the HTML card.
-        pdf_references = []
-
-
-        for index, doc in enumerate(
-            docs,
-            start=1
-        ):
-
-            metadata = doc.metadata
-
-            # ------------------------------------------------
-            # SOURCE FILE / URL
-            # ------------------------------------------------
-
-            source_file = metadata.get(
-                "source_file",
-                "Unknown source"
-            )
-
-            # ------------------------------------------------
-            # PAGE
-            # ------------------------------------------------
-
-            page = metadata.get(
-                "page"
-            )
-
-            # ------------------------------------------------
-            # SHEET
-            # ------------------------------------------------
-
-            sheet = metadata.get(
-                "sheet"
-            )
-
-            # ------------------------------------------------
-            # CHECK URL
-            # ------------------------------------------------
-
-            is_url = str(
-                source_file
-            ).startswith(
-                ("http://", "https://")
-            )
-
-            # =================================================
-            # WEB SOURCE
-            # =================================================
-
-            if is_url:
-
-                safe_url = html.escape(
-                    str(source_file),
-                    quote=True
+                    )
                 )
 
-                source_reference = f"""
-                <a
-                    href="{safe_url}"
-                    target="_blank"
-                    class="source-link"
-                >
-                    {html.escape(str(source_file))}
-                </a>
-                """
+                # =================================================
+                # MODEL
+                # =================================================
 
-            # =================================================
-            # PDF / DOCUMENT SOURCE
-            # =================================================
-
-            else:
-
-                document_title = (
-                    metadata.get("document_title")
-                    or metadata.get("title")
-                    or metadata.get("heading")
-                    or metadata.get("notification_title")
+                llm = ChatOpenAI(
+                    model="gpt-4.1-mini",
+                    temperature=0
                 )
 
-                # ------------------------------------------------
-                # Extract internal PDF heading
-                # ------------------------------------------------
+                chain = (
+                    prompt
+                    | llm
+                    | StrOutputParser()
+                )
 
-                if not document_title:
+                # =================================================
+                # ANSWER
+                # =================================================
 
-                    document_title = extract_document_title(
-                        source_file
+                if not docs:
+
+                    response = (
+                        NO_INFORMATION_MESSAGE
                     )
 
-                # ------------------------------------------------
-                # Final fallback
-                # ------------------------------------------------
+                else:
 
-                if not document_title:
+                    response = chain.invoke(
+                        {
+                            "context":
+                                context,
 
-                    document_title = Path(
-                        str(source_file)
-                    ).stem
+                            "question":
+                                active_query
+                        }
+                    )
 
-                source_reference = html.escape(
-                    str(document_title)
+                # =================================================
+                # CLEAN RESPONSE
+                # =================================================
+
+                clean_response = re.sub(
+                    r"\[Source\s+\d+\]",
+                    "",
+                    str(response),
+                    flags=re.IGNORECASE
                 )
 
-                # ------------------------------------------------
-                # Store PDF for View / Download buttons
-                # ------------------------------------------------
+                clean_response = re.sub(
+                    r"\n\s*\n+",
+                    "\n",
+                    clean_response
+                ).strip()
 
-                pdf_path = get_pdf_path(
-                    source_file
-                )
+                # =================================================
+                # REFERENCE SELECTION
+                # SHOW ONLY REFERENCES DIRECTLY RELEVANT
+                # TO THE GENERATED ANSWER
+                # =================================================
 
-                if pdf_path:
+                if (
+                    not docs
+                    or
+                    clean_response.strip()
+                    == NO_INFORMATION_MESSAGE
+                ):
 
-                    pdf_references.append({
-                        "index": index,
-                        "title": str(document_title),
-                        "path": pdf_path,
-                        "page": get_pdf_page_number(page)
-                    })
+                    insufficient_information = True
+                    top_references = []
 
-            # ------------------------------------------------
-            # PAGE NUMBER
-            # ------------------------------------------------
+                else:
 
-            if page is not None:
+                    insufficient_information = False
 
-                source_reference += (
-                    f" | Page "
-                    f"{html.escape(str(page))}"
-                )
+                    # ---------------------------------------------
+                    # SELECT ONLY DIRECTLY RELEVANT REFERENCES
+                    # ---------------------------------------------
+                    top_references = build_direct_references(
+                        answer_candidates,
+                        active_query,
+                        clean_response,
+                        limit=3
+                    )
 
-            # ------------------------------------------------
-            # SHEET
-            # ------------------------------------------------
+        # ========================================================
+        # ANSWER CARD
+        # ========================================================
 
-            if sheet:
+        safe_answer = html.escape(
+            clean_response
+        )
 
-                source_reference += (
-                    f" | Sheet "
-                    f"{html.escape(str(sheet))}"
-                )
-
-            # ------------------------------------------------
-            # SOURCE CARD
-            # ------------------------------------------------
-
-            source_items_html += f"""
-            <div class="source-item">
-
-                <div class="source-item-title">
-                    Source {index}
-                </div>
-
-                <div class="source-item-reference">
-                    {source_reference}
-                </div>
-
-            </div>
-            """
-
-        # ============================================================
-        # ANSWER CARD STYLE
-        # ============================================================
+        safe_answer = safe_answer.replace(
+            "\n",
+            "<br>"
+        )
 
         answer_card_class = (
             "answer-card no-info-card"
@@ -4788,204 +6799,990 @@ ANSWER:
             else "answer-card"
         )
 
-        # ----------------------------------------------------
-        # COMPLETE ANSWER CARD
-        # ----------------------------------------------------
+        answer_html = f"""
+        <div class="{answer_card_class}">
 
-        render_html(
-            f"""
-            <div class="{answer_card_class}">
+            <div class="answer-top">
 
-                <!-- ==========================================
-                    RIGHT DECORATIVE ARTWORK
-                    ========================================== -->
+                <div class="answer-icon">
+                    💬
+                </div>
 
-                <div class="answer-art">
+                <div class="answer-content">
 
-                    <div class="answer-art-circle"></div>
+                    <div class="answer-title">
+                        💬 Here's what I found
+                    </div>
 
-                    <div class="answer-art-search"></div>
-
-                    <div class="answer-art-star one">✦</div>
-                    <div class="answer-art-star two">✦</div>
-                    <div class="answer-art-star three">✦</div>
+                    <div class="answer-text">
+                        {safe_answer}
+                    </div>
 
                 </div>
 
-
-                <!-- ==========================================
-                    ANSWER HEADER + RESPONSE
-                    ========================================== -->
-
-                <div class="answer-top">
-                    <div class="answer-icon">
-                        📄
-                    </div>
-
-                    <div class="answer-content">
-                        <div class="answer-title">
-                            Here's what I found
-                        </div>
-
-                        <div class="answer-text">
-                            {safe_response}
-                        </div>
-                    </div>
-                </div>
             </div>
-            """
+
+        </div>
+        """
+
+        st.html(
+            answer_html
         )
 
+        # ========================================================
+        # REFERENCES
+        # ========================================================
 
-        #============================================================
-        # REFERENCE DOCUMENTS
-        # VIEW = OPEN PDF IN NEW TAB
-        # DOWNLOAD = DIRECT PDF DOWNLOAD
-        # ============================================================
-        
-        if pdf_references:
-        
+        if (
+            top_references
+            and not insufficient_information
+        ):
+
+            import mimetypes
+
             reference_rows = ""
-        
-            for ref in pdf_references:
-        
-                # --------------------------------------------------------
-                # READ PDF
-                # --------------------------------------------------------
-        
-                try:
-                    with open(ref["path"], "rb") as pdf_file:
-                        pdf_bytes = pdf_file.read()
-        
-                except Exception:
-                    continue
-        
-                # --------------------------------------------------------
-                # CONVERT PDF TO BASE64
-                # --------------------------------------------------------
-        
-                pdf_base64 = base64.b64encode(
-                    pdf_bytes
-                ).decode("utf-8")
-        
-                # --------------------------------------------------------
-                # SAFE DISPLAY VALUES
-                # --------------------------------------------------------
-        
-                source_index = html.escape(
-                    str(ref["index"])
+            reference_count = 0
+
+            for ref_number, ref in enumerate(
+                top_references,
+                start=1
+            ):
+
+                doc = ref["doc"]
+
+                metadata = (
+                    doc.metadata or {}
                 )
-        
-                document_title = html.escape(
-                    str(ref["title"])
+
+                source_file = str(
+                    metadata.get(
+                        "source_file",
+                        "Unknown source"
+                    )
+                ).strip()
+
+                is_url = (
+                    source_file.startswith(
+                        (
+                            "http://",
+                            "https://"
+                        )
+                    )
                 )
-        
-                page_number = html.escape(
-                    str(ref["page"])
+
+                file_type = str(
+                    metadata.get(
+                        "file_type",
+                        ""
+                    )
+                ).strip()
+
+                page = metadata.get(
+                    "page"
                 )
-        
-                download_filename = html.escape(
-                    ref["path"].name,
-                    quote=True
+
+                sheet = metadata.get(
+                    "sheet"
                 )
-        
-                # --------------------------------------------------------
-                # ONE REFERENCE ROW
-                # --------------------------------------------------------
-        
-                reference_rows += f"""
-                <div class="reference-document-row">
-        
-                    <div class="reference-document-main">
-        
-                        <div class="reference-document-icon">
-                            📄
-                        </div>
-        
-                        <div class="reference-document-content">
-        
-                            <div class="reference-document-title">
-                                Reference {source_index}
-                            </div>
-        
-                            <div class="reference-document-reference">
-        
-                                <span class="reference-document-name">
-                                    {document_title}
-                                </span>
-        
-                                <span class="reference-document-separator">
-                                    |
-                                </span>
-        
-                                <span class="reference-document-page">
-                                    Page {page_number}
-                                </span>
-        
-                                <!-- =====================================
-                                     VIEW BUTTON
-                                     ===================================== -->
-        
+
+                source_path = (
+                    get_source_path(
+                        metadata
+                    )
+                )
+
+                # =================================================
+                # FILE NAME ONLY
+                # =================================================
+
+                if is_url:
+
+                    display_name = (
+                        str(
+                            metadata.get(
+                                "document_title",
+                                ""
+                            )
+                        ).strip()
+
+                        or
+
+                        str(
+                            metadata.get(
+                                "title",
+                                ""
+                            )
+                        ).strip()
+
+                        or
+
+                        source_file
+                    )
+
+                else:
+
+                    display_name = (
+                        Path(
+                            source_file
+                        ).name
+                    )
+
+                # =================================================
+                # PAGE / SHEET LABEL
+                # =================================================
+
+                if page is not None:
+
+                    page_label = (
+                        f"Page "
+                        f"{get_pdf_page_number(page)}"
+                    )
+
+                elif sheet:
+
+                    page_label = (
+                        f"Sheet {sheet}"
+                    )
+
+                else:
+
+                    page_label = (
+                        file_type
+                        or
+                        "Document"
+                    )
+
+                # =================================================
+                # REFERENCE ACTIONS
+                # =================================================
+
+                actions = ""
+
+                # -------------------------------------------------
+                # URL
+                # -------------------------------------------------
+
+                if is_url:
+
+                    safe_url = html.escape(
+                        source_file,
+                        quote=True
+                    )
+
+                    actions = f"""
+                    <a
+                        class="reference-view-button"
+                        href="{safe_url}"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        View
+                    </a>
+                    """
+
+                # -------------------------------------------------
+                # RESOLVE FILE EXTENSION
+                # -------------------------------------------------
+
+                elif source_path:
+
+                    file_suffix = (
+                        source_path.suffix.lower()
+                    )
+
+                    # =================================================
+                    # PDF
+                    # =================================================
+
+                    if file_suffix == ".pdf":
+
+                        try:
+
+                            pdf_bytes = (
+                                source_path.read_bytes()
+                            )
+
+                            pdf_base64 = (
+                                base64.b64encode(
+                                    pdf_bytes
+                                ).decode("ascii")
+                            )
+
+                            safe_filename = (
+                                html.escape(
+                                    source_path.name,
+                                    quote=True
+                                )
+                            )
+
+                            page_number = (
+                                get_pdf_page_number(
+                                    page
+                                )
+                            )
+
+                            # -----------------------------------------
+                            # CREATE EXACT REFERENCED PAGE IMAGE
+                            # -----------------------------------------
+
+                            page_image_base64 = ""
+
+                            if pymupdf is not None:
+
+                                try:
+
+                                    pdf_document = (
+                                        pymupdf.open(
+                                            stream=pdf_bytes,
+                                            filetype="pdf"
+                                        )
+                                    )
+
+                                    page_index = (
+                                        max(
+                                            1,
+                                            page_number
+                                        ) - 1
+                                    )
+
+                                    if (
+                                        0
+                                        <= page_index
+                                        < len(pdf_document)
+                                    ):
+
+                                        pdf_page = (
+                                            pdf_document.load_page(
+                                                page_index
+                                            )
+                                        )
+
+                                        pixmap = (
+                                            pdf_page.get_pixmap(
+                                                matrix=pymupdf.Matrix(
+                                                    1.5,
+                                                    1.5
+                                                ),
+                                                alpha=False
+                                            )
+                                        )
+
+                                        page_png = (
+                                            pixmap.tobytes(
+                                                "png"
+                                            )
+                                        )
+
+                                        page_image_base64 = (
+                                            base64.b64encode(
+                                                page_png
+                                            ).decode(
+                                                "ascii"
+                                            )
+                                        )
+
+                                    pdf_document.close()
+
+                                except Exception:
+                                    page_image_base64 = ""
+
+                            # -----------------------------------------
+                            # VIEW + DOWNLOAD
+                            # -----------------------------------------
+
+                            if page_image_base64:
+
+                                actions = f"""
                                 <button
                                     type="button"
                                     class="reference-view-button"
-                                    onclick="viewPDF(
-                                        '{pdf_base64}',
-                                        {page_number}
+                                    onclick="openPDFPageInNewTab(
+                                        '{page_image_base64}',
+                                        {page_number},
+                                        '{html.escape(
+                                            source_path.name,
+                                            quote=True
+                                        )}'
                                     )"
                                 >
                                     View
                                 </button>
-        
-                                <!-- =====================================
-                                     DOWNLOAD BUTTON
-                                     ===================================== -->
-        
                                 <button
                                     type="button"
                                     class="reference-download-button"
-                                    onclick="downloadPDF(
+                                    onclick="downloadBase64File(
                                         '{pdf_base64}',
-                                        '{download_filename}'
+                                        '{safe_filename}',
+                                        'application/pdf'
                                     )"
-                                    title="Download Reference {source_index}"
+                                    title="Download"
                                 >
                                     ↓
                                 </button>
-        
-                            </div>
-        
+                                """
+
+                            else:
+
+                                actions = f"""
+                                <a
+                                    class="reference-view-button"
+                                    href="data:application/pdf;base64,{pdf_base64}"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                >
+                                    View
+                                </a>
+
+                                <button
+                                    type="button"
+                                    class="reference-download-button"
+                                    onclick="downloadBase64File(
+                                        '{pdf_base64}',
+                                        '{safe_filename}',
+                                        'application/pdf'
+                                    )"
+                                    title="Download"
+                                >
+                                    ↓
+                                </button>
+                                """
+
+                        except Exception:
+
+                            actions = ""
+
+                    # =================================================
+                    # EXCEL
+                    # =================================================
+
+                    elif file_suffix in {
+                        ".xlsx",
+                        ".xlsm"
+                    }:
+
+                        try:
+
+                            requested_sheet = (
+                                str(sheet).strip()
+                                if sheet
+                                else None
+                            )
+
+                            # -----------------------------------------
+                            # CREATE ONLY THE REFERENCED SHEET
+                            # -----------------------------------------
+
+                            excel_bytes, selected_sheet = (
+                                create_excel_sheet_download(
+                                    source_path,
+                                    requested_sheet
+                                )
+                            )
+
+                            # -----------------------------------------
+                            # CREATE VIEWABLE HTML OF ONLY
+                            # THE REFERENCED SHEET
+                            # -----------------------------------------
+
+                            excel_html, selected_sheet_view = (
+                                create_excel_sheet_html(
+                                    source_path,
+                                    requested_sheet
+                                )
+                            )
+
+                            if (
+                                excel_bytes
+                                and selected_sheet
+                            ):
+
+                                excel_base64 = (
+                                    base64.b64encode(
+                                        excel_bytes
+                                    ).decode("ascii")
+                                )
+
+                                safe_filename = (
+                                    html.escape(
+                                        source_path.name,
+                                        quote=True
+                                    )
+                                )
+
+                                # -------------------------------------
+                                # IMPORTANT:
+                                # View = ONLY referenced Excel sheet
+                                # Download = ONLY referenced Excel sheet
+                                # -------------------------------------
+
+                                if excel_html:
+
+                                    excel_html_base64 = (
+                                        base64.b64encode(
+                                            excel_html.encode(
+                                                "utf-8"
+                                            )
+                                        ).decode(
+                                            "ascii"
+                                        )
+                                    )
+
+                                    actions = f"""
+                                    <button
+                                        type="button"
+                                        class="reference-view-button"
+                                        onclick="viewExcelSheet(
+                                            '{excel_html_base64}',
+                                            '{html.escape(
+                                                source_path.name,
+                                                quote=True
+                                            )}',
+                                            '{html.escape(
+                                                str(selected_sheet),
+                                                quote=True
+                                            )}'
+                                        )"
+                                    >
+                                        View
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        class="reference-download-button"
+                                        onclick="downloadBase64File(
+                                            '{excel_base64}',
+                                            '{safe_filename}',
+                                            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                                        )"
+                                        title="Download referenced sheet"
+                                    >
+                                        ↓
+                                    </button>
+                                    """
+
+                                else:
+
+                                    actions = f"""
+                                    <button
+                                        type="button"
+                                        class="reference-download-button"
+                                        onclick="downloadBase64File(
+                                            '{excel_base64}',
+                                            '{safe_filename}',
+                                            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                                        )"
+                                        title="Download referenced sheet"
+                                    >
+                                        ↓
+                                    </button>
+                                    """
+
+                        except Exception:
+
+                            actions = ""
+
+                    # =================================================
+                    # WORD
+                    # =================================================
+
+                    elif file_suffix == ".docx":
+
+                        try:
+
+                            file_bytes = (
+                                source_path.read_bytes()
+                            )
+
+                            file_base64 = (
+                                base64.b64encode(
+                                    file_bytes
+                                ).decode("ascii")
+                            )
+
+                            safe_filename = (
+                                html.escape(
+                                    source_path.name,
+                                    quote=True
+                                )
+                            )
+
+                            actions = f"""
+                            <button
+                                type="button"
+                                class="reference-download-button"
+                                onclick="downloadBase64File(
+                                    '{file_base64}',
+                                    '{safe_filename}',
+                                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                                )"
+                                title="Download"
+                            >
+                                ↓
+                            </button>
+                            """
+
+                        except Exception:
+
+                            actions = ""
+
+                    # =================================================
+                    # OTHER SUPPORTED FILES
+                    # =================================================
+
+                    else:
+
+                        try:
+
+                            file_bytes = (
+                                source_path.read_bytes()
+                            )
+
+                            file_base64 = (
+                                base64.b64encode(
+                                    file_bytes
+                                ).decode("ascii")
+                            )
+
+                            safe_filename = (
+                                html.escape(
+                                    source_path.name,
+                                    quote=True
+                                )
+                            )
+
+                            mime_type = (
+                                mimetypes.guess_type(
+                                    source_path.name
+                                )[0]
+                                or
+                                "application/octet-stream"
+                            )
+
+                            safe_mime = (
+                                html.escape(
+                                    mime_type,
+                                    quote=True
+                                )
+                            )
+
+                            actions = f"""
+                            <button
+                                type="button"
+                                class="reference-download-button"
+                                onclick="downloadBase64File(
+                                    '{file_base64}',
+                                    '{safe_filename}',
+                                    '{safe_mime}'
+                                )"
+                                title="Download"
+                            >
+                                ↓
+                            </button>
+                            """
+
+                        except Exception:
+
+                            actions = ""
+
+                # =================================================
+                # RELEVANT EXCERPT
+                # =================================================
+
+                snippet = html.escape(
+                    ref.get(
+                        "snippet",
+                        ""
+                    )
+                )
+
+                reference_rows += f"""
+                <div class="reference-row">
+
+                    <div class="reference-info">
+
+                        <div class="reference-name">
+                            {html.escape(
+                                display_name
+                            )}
                         </div>
-        
+
+                        <div class="reference-location">
+                            {html.escape(
+                                page_label
+                            )}
+                        </div>
+
+                        <div class="reference-snippet">
+                            {snippet}
+                        </div>
+
                     </div>
-        
+
+                    <div class="reference-actions">
+                        {actions}
+                    </div>
+
                 </div>
                 """
-        
-            # ============================================================
-            # COMPLETE REFERENCE PANEL
-            # ============================================================
-        
+
+                reference_count += 1
+
+            # ====================================================
+            # REFERENCE PANEL
+            # ====================================================
+
             reference_html = f"""
             <!DOCTYPE html>
-        
             <html>
-        
             <head>
-        
-                <meta charset="UTF-8">
-        
-                <style>
-        
-                    * {{
-                        box-sizing: border-box;
+
+                        <script>
+
+            // ========================================================
+            // VIEW EXACT PDF REFERENCE PAGE
+            // ========================================================
+
+            function openPDFPageInNewTab(
+                imageBase64,
+                pageNumber,
+                fileName
+            ) {{
+
+                try {{
+
+                    // Create the new tab immediately from the
+                    // user click so browser popup blockers
+                    // do not prevent it.
+                    const newTab = window.open(
+                        "",
+                        "_blank"
+                    );
+
+                    if (!newTab) {{
+
+                        alert(
+                            "Please allow pop-ups for NagarSathi to view the reference page."
+                        );
+
+                        return;
+
                     }}
-        
-                    html,
+
+                    newTab.document.open();
+
+                    newTab.document.write(`
+                        <!DOCTYPE html>
+
+                        <html>
+
+                        <head>
+
+                            <meta charset="UTF-8">
+
+                            <title>
+                                ${{fileName}} — Page ${{pageNumber}}
+                            </title>
+
+                            <style>
+
+                                html,
+                                body {{
+                                    margin: 0;
+                                    padding: 0;
+                                    width: 100%;
+                                    min-height: 100%;
+                                    background: #020714;
+                                    font-family:
+                                        Inter,
+                                        -apple-system,
+                                        BlinkMacSystemFont,
+                                        "Segoe UI",
+                                        sans-serif;
+                                }}
+
+                                body {{
+                                    display: flex;
+                                    flex-direction: column;
+                                    align-items: center;
+                                    padding: 18px;
+                                    box-sizing: border-box;
+                                }}
+
+                                .header {{
+                                    width: 100%;
+                                    max-width: 1200px;
+                                    display: flex;
+                                    align-items: center;
+                                    justify-content: space-between;
+                                    margin-bottom: 14px;
+                                }}
+
+                                .title {{
+                                    color: #FFFFFF;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }}
+
+                                .page {{
+                                    color: #9AA7C2;
+                                    font-size: 12px;
+                                    margin-left: 8px;
+                                }}
+
+                                img {{
+                                    display: block;
+                                    max-width: 100%;
+                                    width: auto;
+                                    height: auto;
+                                    object-fit: contain;
+                                    background: #FFFFFF;
+                                    box-shadow:
+                                        0 8px 35px
+                                        rgba(0,0,0,0.45);
+                                }}
+
+                            </style>
+
+                        </head>
+
+                        <body>
+
+                            <div class="header">
+
+                                <div class="title">
+                                    ${{fileName}}
+                                    <span class="page">
+                                        Page ${{pageNumber}}
+                                    </span>
+                                </div>
+
+                            </div>
+
+                            <img
+                                src="data:image/png;base64,${{imageBase64}}"
+                                alt="${{fileName}} — Page ${{pageNumber}}"
+                            >
+
+                        </body>
+
+                        </html>
+                    `);
+
+                    newTab.document.close();
+
+                    newTab.focus();
+
+                }} catch (error) {{
+
+                    console.error(
+                        "Unable to open PDF reference page:",
+                        error
+                    );
+
+                }}
+
+            }}
+
+            // ========================================================
+            // VIEW EXCEL REFERENCE SHEET
+            // ========================================================
+
+            function viewExcelSheet(
+                htmlBase64,
+                fileName,
+                sheetName
+            ) {{
+
+                try {{
+
+                    const binaryString =
+                        atob(htmlBase64);
+
+                    const bytes =
+                        new Uint8Array(
+                            binaryString.length
+                        );
+
+                    for (
+                        let i = 0;
+                        i < binaryString.length;
+                        i++
+                    ) {{
+
+                        bytes[i] =
+                            binaryString.charCodeAt(i);
+
+                    }}
+
+                    const htmlText =
+                        new TextDecoder(
+                            "utf-8"
+                        ).decode(bytes);
+
+                    const blob =
+                        new Blob(
+                            [htmlText],
+                            {{
+                                type:
+                                    "text/html;charset=utf-8"
+                            }}
+                        );
+
+                    const blobUrl =
+                        URL.createObjectURL(
+                            blob
+                        );
+
+                    const newWindow =
+                        window.open(
+                            "",
+                            "_blank"
+                        );
+
+                    if (!newWindow) {{
+
+                        alert(
+                            "Please allow pop-ups for NagarSathi to view the reference sheet."
+                        );
+
+                        return;
+
+                    }}
+
+                    newWindow.document.open();
+                    newWindow.document.write(
+                        htmlText
+                    );
+
+                    newWindow.document.close();
+                    newWindow.focus();
+
+                    setTimeout(
+                        function () {{
+                            URL.revokeObjectURL(
+                                blobUrl
+                            );
+                        }},
+                        60000
+                    );
+
+                }} catch (error) {{
+
+                    console.error(
+                        "Excel reference view failed:",
+                        error
+                    );
+
+                }}
+
+            }}
+
+
+            // ========================================================
+            // GENERIC BASE64 FILE DOWNLOAD
+            // ========================================================
+
+            function downloadBase64File(
+                base64,
+                filename,
+                mimeType
+            ) {{
+
+                try {{
+
+                    const binaryString =
+                        atob(base64);
+
+                    const len =
+                        binaryString.length;
+
+                    const bytes =
+                        new Uint8Array(
+                            len
+                        );
+
+                    for (
+                        let i = 0;
+                        i < len;
+                        i++
+                    ) {{
+
+                        bytes[i] =
+                            binaryString.charCodeAt(
+                                i
+                            );
+
+                    }}
+
+                    const blob =
+                        new Blob(
+                            [bytes],
+                            {{
+                                type: mimeType
+                            }}
+                        );
+
+                    const blobUrl =
+                        URL.createObjectURL(
+                            blob
+                        );
+
+                    const link =
+                        document.createElement(
+                            "a"
+                        );
+
+                    link.href =
+                        blobUrl;
+
+                    link.download =
+                        filename;
+
+                    link.style.display =
+                        "none";
+
+                    document.body.appendChild(
+                        link
+                    );
+
+                    link.click();
+
+                    document.body.removeChild(
+                        link
+                    );
+
+                    setTimeout(
+                        function () {{
+                            URL.revokeObjectURL(
+                                blobUrl
+                            );
+                        }},
+                        60000
+                    );
+
+                }} catch (error) {{
+
+                    console.error(
+                        "File download failed:",
+                        error
+                    );
+
+                }}
+
+            }}
+
+            </script>
+
+
+                <meta charset="UTF-8">
+
+                <style>
+
                     body {{
                         margin: 0;
                         padding: 0;
                         background: transparent;
+                        color: #E8ECF7;
                         font-family:
                             Inter,
                             -apple-system,
@@ -4993,510 +7790,225 @@ ANSWER:
                             "Segoe UI",
                             sans-serif;
                     }}
-        
-                    .reference-documents-panel {{
+
+                    .reference-panel {{
                         width: 100%;
-                        margin: 0;
-                        padding: 0;
-        
                         border:
                             1px solid
-                            rgba(62, 91, 157, 0.34);
-        
+                            rgba(
+                                62,
+                                91,
+                                157,
+                                0.34
+                            );
                         border-radius: 11px;
-        
+                        overflow: hidden;
                         background:
                             linear-gradient(
                                 180deg,
-                                rgba(11, 27, 56, 0.92),
-                                rgba(8, 21, 46, 0.92)
+                                rgba(
+                                    11,
+                                    27,
+                                    56,
+                                    0.92
+                                ),
+                                rgba(
+                                    8,
+                                    21,
+                                    46,
+                                    0.92
+                                )
                             );
-        
-                        overflow: hidden;
                     }}
-        
+
                     .reference-header {{
-                        width: 100%;
                         min-height: 46px;
-        
                         padding: 0 18px;
-        
                         display: flex;
                         align-items: center;
-        
-                        color: #E6EAF4;
-        
                         font-size: 14px;
                         font-weight: 650;
-                    }}
-        
-                    .reference-folder-icon {{
-                        flex-shrink: 0;
-                        margin-right: 9px;
-                        font-size: 17px;
-                        line-height: 1;
-                    }}
-        
-                    .reference-panel-title {{
                         color: #E6EAF4;
-                        white-space: nowrap;
-                    }}
-        
-                    .reference-panel-count {{
-                        margin-left: 6px;
-                        color: #8996B5;
-                        font-size: 13px;
-                        font-weight: 500;
-                    }}
-        
-                    .reference-document-list {{
-                        width: 100%;
-        
-                        padding: 3px 18px 10px 18px;
-        
-                        border-top:
-                            1px solid
-                            rgba(65, 91, 155, 0.22);
-                    }}
-        
-                    .reference-document-row {{
-                        width: 100%;
-                        min-height: 62px;
-        
-                        display: flex;
-                        align-items: center;
-        
                         border-bottom:
                             1px solid
-                            rgba(65, 91, 155, 0.14);
+                            rgba(
+                                62,
+                                91,
+                                157,
+                                0.25
+                            );
                     }}
-        
-                    .reference-document-row:last-child {{
-                        border-bottom: none;
-                    }}
-        
-                    .reference-document-main {{
-                        width: 100%;
-        
+
+                    .reference-row {{
                         display: flex;
                         align-items: center;
-        
-                        min-width: 0;
-                    }}
-        
-                    .reference-document-icon {{
-                        width: 30px;
-                        min-width: 30px;
-        
-                        display: flex;
-                        align-items: center;
-                        justify-content: flex-start;
-        
-                        font-size: 16px;
-                    }}
-        
-                    .reference-document-content {{
-                        width: 100%;
-                        min-width: 0;
-                    }}
-        
-                    .reference-document-title {{
-                        margin-bottom: 3px;
-        
-                        color: #F2F5FF;
-        
-                        font-size: 12px;
-                        font-weight: 700;
-                        line-height: 1.2;
-                    }}
-        
-                    .reference-document-reference {{
-                        width: 100%;
-        
-                        display: flex;
-                        align-items: center;
-        
-                        min-width: 0;
-        
-                        color: #B7C2DD;
-        
-                        font-size: 12px;
-                        line-height: 1.3;
-                    }}
-        
-                    .reference-document-name {{
-                        min-width: 0;
-                        max-width: calc(100% - 125px);
-        
-                        overflow: hidden;
-                        white-space: nowrap;
-                        text-overflow: ellipsis;
-        
-                        color: #B8C7E6;
-                    }}
-        
-                    .reference-document-separator {{
-                        margin: 0 8px;
-                        color: #6D7A99;
-                    }}
-        
-                    .reference-document-page {{
-                        flex-shrink: 0;
-                        color: #9AA8C7;
-                        white-space: nowrap;
-                    }}
-        
-                    /* ====================================================
-                       VIEW BUTTON
-                       ==================================================== */
-        
-                    .reference-view-button {{
-                        flex-shrink: 0;
-        
-                        width: 52px;
-                        height: 34px;
-        
-                        margin-left: 10px;
-        
-                        display: inline-flex;
-                        align-items: center;
-                        justify-content: center;
-        
-                        padding: 0;
-        
-                        border:
+                        justify-content: space-between;
+                        gap: 18px;
+                        padding: 14px 18px;
+                        border-bottom:
                             1px solid
-                            rgba(89, 112, 180, 0.55);
-        
-                        border-radius: 9px;
-        
-                        background:
-                            rgba(17, 30, 59, 0.82);
-        
-                        color: #F1F4FF;
-        
-                        font-family: inherit;
-                        font-size: 12px;
+                            rgba(
+                                62,
+                                91,
+                                157,
+                                0.18
+                            );
+                    }}
+
+                    .reference-row:last-child {{
+                        border-bottom: 0;
+                    }}
+
+                    .reference-info {{
+                        min-width: 0;
+                        flex: 1;
+                    }}
+
+                    .reference-name {{
+                        color: #F4F6FF;
+                        font-size: 13px;
                         font-weight: 650;
-        
-                        cursor: pointer;
-        
-                        transition:
-                            background 0.15s ease,
-                            border-color 0.15s ease,
-                            transform 0.15s ease;
+                        margin-bottom: 4px;
+                        word-break: break-word;
                     }}
-        
-                    .reference-view-button:hover {{
-                        background:
-                            rgba(38, 51, 80, 0.98);
-        
-                        border-color:
-                            rgba(115, 135, 200, 0.85);
-        
-                        transform: translateY(-1px);
+
+                    .reference-location {{
+                        color: #9DA9C4;
+                        font-size: 11px;
+                        margin-bottom: 5px;
                     }}
-        
-                    /* ====================================================
-                       DOWNLOAD BUTTON
-                       ==================================================== */
-        
-                    .reference-download-button {{
+
+                    .reference-snippet {{
+                        color: #7F8BA8;
+                        font-size: 10px;
+                        line-height: 1.45;
+                    }}
+
+                    .reference-actions {{
                         flex-shrink: 0;
-        
-                        width: 34px;
-                        height: 34px;
-        
-                        margin-left: 6px;
-        
+                        display: flex;
+                        align-items: center;
+                        gap: 7px;
+                    }}
+
+                    .reference-view-button,
+                    .reference-download-button {{
                         display: inline-flex;
                         align-items: center;
                         justify-content: center;
-        
-                        padding: 0;
-        
-                        border:
-                            1px solid
-                            rgba(89, 112, 180, 0.55);
-        
-                        border-radius: 9px;
-        
-                        background:
-                            rgba(17, 30, 59, 0.82);
-        
-                        color: #F1F4FF;
-        
-                        font-family: inherit;
-                        font-size: 18px;
-                        font-weight: 500;
-        
-                        line-height: 1;
-        
+                        min-width: 64px;
+                        height: 30px;
+                        padding: 0 10px;
+                        border-radius: 7px;
+                        border: 1px solid
+                            rgba(
+                                102,
+                                119,
+                                190,
+                                0.55
+                            );
+                        text-decoration: none;
                         cursor: pointer;
-        
-                        transition:
-                            background 0.15s ease,
-                            border-color 0.15s ease,
-                            transform 0.15s ease;
+                        font-size: 11px;
+                        font-weight: 600;
+                        box-sizing: border-box;
                     }}
-        
-                    .reference-download-button:hover {{
+
+                    .reference-view-button {{
                         background:
-                            rgba(38, 51, 80, 0.98);
-        
+                            rgba(
+                                73,
+                                93,
+                                170,
+                                0.25
+                            );
+                        color: #DCE3FF;
+                    }}
+
+                    .reference-download-button {{
+                        background:
+                            rgba(
+                                102,
+                                75,
+                                210,
+                                0.32
+                            );
+                        color: #EEE9FF;
+                    }}
+
+                    .reference-view-button:hover,
+                    .reference-download-button:hover {{
                         border-color:
-                            rgba(115, 135, 200, 0.85);
-        
-                        transform: translateY(-1px);
+                            rgba(
+                                130,
+                                145,
+                                230,
+                                0.80
+                            );
                     }}
-        
-                    @media (max-width: 700px) {{
-        
-                        .reference-document-name {{
-                            max-width: 150px;
-                        }}
-        
-                    }}
-        
+
                 </style>
-        
+
             </head>
-        
+
             <body>
-        
-                <div class="reference-documents-panel">
-        
+
+                <div class="reference-panel">
+
                     <div class="reference-header">
-        
-                        <span class="reference-folder-icon">
-                            📁
-                        </span>
-        
-                        <span class="reference-panel-title">
-                            Reference documents
-                        </span>
-        
-                        <span class="reference-panel-count">
-                            {len(pdf_references)}
-                        </span>
-        
+                        📁 Reference documents
                     </div>
-        
-                    <div class="reference-document-list">
-        
-                        {reference_rows}
-        
-                    </div>
-        
+
+                    {reference_rows}
+
                 </div>
-        
-        
-                <script>
-        
-                    // ====================================================
-                    // BASE64 → BLOB
-                    // ====================================================
-        
-                    function base64ToBlob(
-                        base64,
-                        contentType
-                    ) {{
-        
-                        const byteCharacters =
-                            atob(base64);
-        
-                        const byteArrays = [];
-        
-                        const sliceSize = 1024;
-        
-                        for (
-                            let offset = 0;
-                            offset < byteCharacters.length;
-                            offset += sliceSize
-                        ) {{
-        
-                            const slice =
-                                byteCharacters.slice(
-                                    offset,
-                                    offset + sliceSize
-                                );
-        
-                            const byteNumbers =
-                                new Array(slice.length);
-        
-                            for (
-                                let i = 0;
-                                i < slice.length;
-                                i++
-                            ) {{
-        
-                                byteNumbers[i] =
-                                    slice.charCodeAt(i);
-        
-                            }}
-        
-                            const byteArray =
-                                new Uint8Array(
-                                    byteNumbers
-                                );
-        
-                            byteArrays.push(
-                                byteArray
-                            );
-        
-                        }}
-        
-                        return new Blob(
-                            byteArrays,
-                            {{
-                                type: contentType
-                            }}
-                        );
-                    }}
-        
-        
-                    // ====================================================
-                    // VIEW PDF
-                    // OPENS PDF IN NEW BROWSER TAB
-                    // ====================================================
-        
-                    function viewPDF(
-                        base64,
-                        pageNumber
-                    ) {{
-                    
-                        try {{
-                    
-                            const blob =
-                                base64ToBlob(
-                                    base64,
-                                    "application/pdf"
-                                );
-                    
-                            const pdfURL =
-                                URL.createObjectURL(
-                                    blob
-                                );
-                    
-                            /*
-                             * Open the PDF directly
-                             * at the referenced page.
-                             */
-                            const pageURL =
-                                pdfURL +
-                                "#page=" +
-                                pageNumber;
-                    
-                            window.open(
-                                pageURL,
-                                "_blank"
-                            );
-                    
-                        }} catch (error) {{
-                    
-                            console.error(
-                                "Unable to open PDF:",
-                                error
-                            );
-                    
-                        }}
-                    
-                    }}
-        
-        
-                    // ====================================================
-                    // DOWNLOAD PDF
-                    // ====================================================
-        
-                    function downloadPDF(
-                        base64,
-                        filename
-                    ) {{
-        
-                        try {{
-        
-                            const blob =
-                                base64ToBlob(
-                                    base64,
-                                    "application/pdf"
-                                );
-        
-                            const pdfURL =
-                                URL.createObjectURL(
-                                    blob
-                                );
-        
-                            const link =
-                                document.createElement(
-                                    "a"
-                                );
-        
-                            link.href = pdfURL;
-                            link.download = filename;
-        
-                            document.body.appendChild(
-                                link
-                            );
-        
-                            link.click();
-        
-                            document.body.removeChild(
-                                link
-                            );
-        
-                            setTimeout(
-                                function() {{
-                                    URL.revokeObjectURL(
-                                        pdfURL
-                                    );
-                                }},
-                                1000
-                            );
-        
-                        }} catch (error) {{
-        
-                            console.error(
-                                "Unable to download PDF:",
-                                error
-                            );
-        
-                        }}
-        
-                    }}
-        
-                </script>
-        
+
             </body>
-        
+
             </html>
             """
-        
-            # ============================================================
-            # RENDER REFERENCE PANEL
-            # ============================================================
-        
+
             components.html(
                 reference_html,
                 height=(
                     48
-                    + (len(pdf_references) * 62)
-                    + 14
+                    +
+                    (
+                        reference_count
+                        * 110
+                    )
+                    +
+                    12
                 ),
                 scrolling=False
             )
+
+        # ========================================================
+        # SEARCH COMPLETED
+        # ========================================================
+
+        st.session_state[
+            "run_search"
+        ] = False
+
+    except Exception as error:
+
+        st.session_state[
+            "run_search"
+        ] = False
+
+        st.error(
+            "Unable to process the question."
+        )
+
+        st.exception(
+            error
+        )
 
 
 # ============================================================
 # OUTER ERROR HANDLER
 # ============================================================
-
-    except Exception as error:
-
-        st.error(
-            "Unable to process the question."
-            )
-        
-        st.exception(error)
 
 # ============================================================
 # BOTTOM AI DISCLAIMER
