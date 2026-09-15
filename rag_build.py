@@ -45,17 +45,12 @@ os.environ["USER_AGENT"] = "NagarSathi/1.0"
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-
 DATA_DIR = BASE_DIR / "data"
-
 PDF_DIR = DATA_DIR / "pdf_file"
 WORD_DIR = DATA_DIR / "Word_file"
 EXCEL_DIR = DATA_DIR / "Excel_file"
-
 URL_FILE = DATA_DIR / "url.txt"
-
 VECTORSTORE_DIR = BASE_DIR / "vectorstore"
-
 
 # ============================================================
 # 3. CREATE FOLDERS IF THEY DON'T EXIST
@@ -199,18 +194,21 @@ def load_pdf(file_path):
                     page_content=text,
 
                     metadata={
-
                         "source_file":
                             file_path.name,
+
+                        "source_path":
+                            str(file_path.resolve()),
+
+                        "source_folder":
+                            PDF_DIR.name,
 
                         "file_type":
                             "PDF",
 
                         "page":
-                            page_number
-
+                            page_number,
                     }
-
                 )
 
             )
@@ -293,18 +291,21 @@ def load_pdf(file_path):
                     page_content=text,
 
                     metadata={
-
                         "source_file":
                             file_path.name,
+
+                        "source_path":
+                            str(file_path.resolve()),
+
+                        "source_folder":
+                            PDF_DIR.name,
 
                         "file_type":
                             "Scanned PDF",
 
                         "page":
-                            page_number
-
+                            page_number,
                     }
-
                 )
 
             )
@@ -404,9 +405,16 @@ def load_word(file_path):
             page_content=full_text,
 
             metadata={
-
                 "source_file":
                     file_path.name,
+
+                "source_path":
+                    str(
+                        file_path.resolve()
+                    ),
+
+                "source_folder":
+                    WORD_DIR.name,
 
                 "file_type":
                     "Word"
@@ -539,6 +547,14 @@ def load_excel(file_path):
                         "source_file":
                             file_path.name,
 
+                        "source_path":
+                            str(
+                                file_path.resolve()
+                            ),
+
+                        "source_folder":
+                            EXCEL_DIR.name,
+
                         "file_type":
                             "Excel",
 
@@ -578,17 +594,59 @@ def load_urls():
         return documents
 
 
-    urls = [
+    # --------------------------------------------------------
+    # Read and de-duplicate configured URLs
+    # --------------------------------------------------------
 
-        line.strip()
+    urls = []
+    seen_urls = set()
 
-        for line in URL_FILE.read_text(
-            encoding="utf-8"
-        ).splitlines()
+    try:
 
-        if line.strip()
+        configured_lines = (
+            URL_FILE.read_text(
+                encoding="utf-8"
+            ).splitlines()
+        )
 
-    ]
+    except Exception as e:
+
+        print(
+            "✗ URL file reading error:",
+            e
+        )
+
+        return documents
+
+    for line in configured_lines:
+
+        url = str(
+            line or ""
+        ).strip()
+
+        if not url:
+            continue
+
+        if not url.startswith(
+            (
+                "http://",
+                "https://"
+            )
+        ):
+            continue
+
+        # Remove accidental trailing slash
+        # only for duplicate comparison.
+        normalized_url = url.rstrip("/").lower()
+
+        if normalized_url in seen_urls:
+            continue
+
+        seen_urls.add(
+            normalized_url
+        )
+
+        urls.append(url)
 
 
     print()
@@ -635,6 +693,9 @@ def load_urls():
 
                             "source_file":
                                 url,
+
+                            "source_folder":
+                                "Official URL",
 
                             "source_url":
                                 url,
@@ -700,15 +761,18 @@ def load_all_documents():
 
     for file in EXCEL_DIR.iterdir():
 
+        if not file.is_file():
+            continue
+
         if file.suffix.lower() in [
             ".xlsx",
-            ".xls"
+            ".xls",
+            ".xlsm"
         ]:
 
             documents.extend(
                 load_excel(file)
             )
-
 
     # --------------------------------------------------------
     # URL
@@ -733,8 +797,19 @@ def build_vectorstore():
     print("NAGARSATHI RAG BUILD")
     print("========================================")
 
+    try:
 
-    documents = load_all_documents()
+        documents = load_all_documents()
+
+    except Exception as e:
+
+        print()
+        print(
+            "✗ Document loading failed:",
+            e
+        )
+
+        return False
 
 
     # --------------------------------------------------------
@@ -831,54 +906,129 @@ def build_vectorstore():
         "Creating embeddings..."
     )
 
+    try:
 
-    embeddings = OpenAIEmbeddings(
+        embeddings = OpenAIEmbeddings(
+            model="text-embedding-3-small"
+        )
 
-        model="text-embedding-3-small"
+    except Exception as e:
 
+        print()
+        print(
+            "✗ Embedding initialization failed:",
+            e
+        )
+
+        return False
+
+
+    # ========================================================
+    # 14. CREATE NEW FAISS FIRST
+    #
+    # IMPORTANT:
+    # Do NOT delete the existing vectorstore until the new
+    # vectorstore has been successfully created.
+    # ========================================================
+
+    try:
+
+        vectorstore = FAISS.from_documents(
+            chunks,
+            embeddings
+        )
+
+    except Exception as e:
+
+        print()
+        print(
+            "✗ FAISS creation failed:",
+            e
+        )
+
+        return False
+
+
+    # ========================================================
+    # 15. SAVE NEW VECTORSTORE
+    # ========================================================
+
+    temporary_vectorstore_dir = (
+        VECTORSTORE_DIR.parent
+        / (
+            VECTORSTORE_DIR.name
+            + "_new"
+        )
     )
 
+    try:
+
+        # Remove an incomplete previous temporary build.
+        if temporary_vectorstore_dir.exists():
+
+            shutil.rmtree(
+                temporary_vectorstore_dir
+            )
+
+        temporary_vectorstore_dir.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        vectorstore.save_local(
+            str(
+                temporary_vectorstore_dir
+            )
+        )
+
+    except Exception as e:
+
+        print()
+        print(
+            "✗ Vectorstore save failed:",
+            e
+        )
+
+        if temporary_vectorstore_dir.exists():
+
+            try:
+                shutil.rmtree(
+                    temporary_vectorstore_dir
+                )
+            except Exception:
+                pass
+
+        return False
+
 
     # ========================================================
-    # 14. REMOVE OLD VECTORSTORE
+    # 16. REPLACE OLD VECTORSTORE
+    #
+    # Only replace the old database after the new one has
+    # been completely written.
     # ========================================================
 
-    if VECTORSTORE_DIR.exists():
+    try:
 
-        shutil.rmtree(
+        if VECTORSTORE_DIR.exists():
+
+            shutil.rmtree(
+                VECTORSTORE_DIR
+            )
+
+        temporary_vectorstore_dir.rename(
             VECTORSTORE_DIR
         )
 
+    except Exception as e:
 
-    VECTORSTORE_DIR.mkdir(
-        parents=True,
-        exist_ok=True
-    )
+        print()
+        print(
+            "✗ Vectorstore replacement failed:",
+            e
+        )
 
-
-    # ========================================================
-    # 15. CREATE FAISS
-    # ========================================================
-
-    vectorstore = FAISS.from_documents(
-
-        chunks,
-
-        embeddings
-
-    )
-
-
-    # ========================================================
-    # 16. SAVE
-    # ========================================================
-
-    vectorstore.save_local(
-
-        str(VECTORSTORE_DIR)
-
-    )
-
+        return False
 
     print()
     print("========================================")
