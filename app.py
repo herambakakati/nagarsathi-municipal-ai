@@ -2,6 +2,9 @@ import os
 import html
 import re
 import base64
+import mimetypes
+import urllib.request
+from html.parser import HTMLParser
 import pytesseract
 from io import BytesIO
 from copy import copy
@@ -3676,38 +3679,149 @@ def get_pdf_path(source_file):
 # ============================================================
 # SOURCE / SERVICE HELPERS
 # ============================================================
-
 SERVICE_CONFIG = {
+
+    # ============================================================
+    # PROPERTY TAX
+    # ============================================================
     "Property tax": {
+
+        "query": (
+            "Provide all available municipal information about "
+            "property tax, including assessment, valuation, "
+            "tax demand, payment, mutation, ownership and "
+            "applicable municipal requirements."
+        ),
+
+        "document_aliases": [
+            "property tax",
+            "property-tax",
+            "holding tax",
+            "house tax",
+            "property assessment",
+            "tax assessment",
+            "municipal taxation"
+        ],
+
         "keywords": [
             "property tax",
             "holding tax",
             "house tax",
             "property assessment",
-            "assessment",
+            "tax assessment",
             "annual value",
+            "annual valuation",
             "tax demand",
             "tax payment",
-            "mutation"
+            "tax liability",
+            "taxpayer",
+            "mutation",
+            "municipal tax",
+            "municipal taxation",
+            "valuation",
+            "assessment",
+            "property",
+            "owner",
+            "demand",
+            "tax"
         ]
     },
 
+
+    # ============================================================
+    # BUILDING PERMISSION
+    # ============================================================
     "Building permission": {
+
+        "query": (
+            "Provide all available municipal information about "
+            "building permission, including building plans, "
+            "building permits, approval, sanction, construction "
+            "requirements, application procedure, development "
+            "permission, setback, completion certificate and "
+            "occupancy certificate."
+        ),
+
+        "document_aliases": [
+            "building permission",
+            "building permit",
+            "building plan",
+            "building rules",
+            "building bye laws",
+            "building bye-laws",
+            "building byelaws",
+            "building regulations",
+            "development permission",
+            "development rules",
+            "construction rules"
+        ],
+
         "keywords": [
             "building permission",
             "building permit",
             "building plan",
-            "construction",
-            "construction work",
+            "building approval",
+            "building sanction",
+            "approved plan",
+            "sanctioned plan",
+            "development permission",
+            "development approval",
+            "construction permission",
+            "construction approval",
+            "construction rules",
             "building rules",
-            "commencement",
+            "building bye laws",
+            "building bye-laws",
+            "building byelaws",
+            "building regulations",
             "completion certificate",
-            "completion of building",
-            "development permission"
+            "occupancy certificate",
+            "building completion",
+            "building application",
+            "application for building",
+            "setback",
+            "floor area",
+            "floor",
+            "coverage",
+            "architect",
+            "engineer",
+            "construction",
+            "building",
+            "permission",
+            "permit",
+            "approval",
+            "sanction",
+            "development",
+            "plan"
         ]
     },
 
+
+    # ============================================================
+    # TRADE LICENSE
+    # ============================================================
     "Trade license": {
+
+        "query": (
+            "Provide all available municipal information about "
+            "trade license, including application, registration, "
+            "renewal, business or shop license, commercial "
+            "license, permit, fees and applicable requirements."
+        ),
+
+        "document_aliases": [
+            "trade license",
+            "trade licence",
+            "trade permit",
+            "trade registration",
+            "shop license",
+            "shop licence",
+            "business license",
+            "business licence",
+            "commercial license",
+            "commercial licence"
+        ],
+
         "keywords": [
             "trade license",
             "trade licence",
@@ -3720,11 +3834,40 @@ SERVICE_CONFIG = {
             "commercial license",
             "commercial licence",
             "license renewal",
-            "licence renewal"
+            "licence renewal",
+            "renewal",
+            "application",
+            "registration",
+            "establishment",
+            "business",
+            "shop",
+            "permit"
         ]
     },
 
+
+    # ============================================================
+    # ELECTRICITY CONNECTION
+    # ============================================================
     "Electricity connection": {
+
+        "query": (
+            "Provide all available municipal information about "
+            "electricity connection, electrical connection, "
+            "power connection, electricity supply, meter, "
+            "consumer connection and applicable requirements."
+        ),
+
+        "document_aliases": [
+            "electricity connection",
+            "electrical connection",
+            "electric connection",
+            "power connection",
+            "electricity supply",
+            "electricity service",
+            "electrical service"
+        ],
+
         "keywords": [
             "electricity connection",
             "electrical connection",
@@ -3732,38 +3875,110 @@ SERVICE_CONFIG = {
             "power connection",
             "electricity service",
             "electrical service",
-            "electricity supply"
+            "electricity supply",
+            "electricity",
+            "electrical",
+            "connection",
+            "power",
+            "meter",
+            "consumer",
+            "supply",
+            "wiring"
         ]
     },
 
+
+    # ============================================================
+    # SANITATION
+    # ============================================================
     "Sanitation": {
+
+        "query": (
+            "Provide all available municipal information about "
+            "sanitation, including sewage, sewerage, drainage, "
+            "latrine, urinal, waste management, cleanliness, "
+            "hygiene, drinking water and applicable requirements."
+        ),
+
+        "document_aliases": [
+            "sanitation",
+            "sanitary",
+            "solid waste",
+            "solid waste management",
+            "waste management",
+            "sewage",
+            "sewerage",
+            "drainage",
+            "public health"
+        ],
+
         "keywords": [
             "sanitation",
+            "sanitary",
             "latrine",
             "urinal",
             "sewage",
+            "sewerage",
             "sewer",
             "waste",
+            "solid waste",
+            "solid waste management",
+            "waste management",
+            "waste disposal",
+            "waste collection",
             "drainage",
             "cleanliness",
             "hygiene",
             "drinking water",
-            "washing facilities"
+            "washing facilities",
+            "public health"
         ]
     },
 
+
+    # ============================================================
+    # BIRTH CERTIFICATE
+    # ============================================================
     "Birth certificate": {
-        "keywords": [
+
+        "query": (
+            "Provide all available municipal information about "
+            "birth certificate and birth registration, including "
+            "registration of birth, birth record, date of birth, "
+            "certificate issuance, registrar and applicable "
+            "municipal requirements."
+        ),
+
+                "document_aliases": [
             "birth certificate",
             "birth registration",
             "registration of birth",
             "birth record",
             "certificate of birth",
+            "registration of births"
+        ],
+
+        # These phrases can occur in unrelated documents.
+        # They must NOT identify a document as a birth-certificate
+        # document by themselves.
+        "weak_phrases": [
             "date of birth"
+        ],
+
+        "keywords": [
+            "birth certificate",
+            "birth registration",
+            "registration of birth",
+            "registration of births",
+            "birth record",
+            "certificate of birth",
+            "date of birth",
+            "registrar",
+            "registration",
+            "birth"
         ]
     }
 }
-
 
 def get_source_path(metadata):
     """
@@ -3843,21 +4058,23 @@ def get_source_path(metadata):
 
     return None
 
-
 def get_excel_sheet_name(
     source_path,
     requested_sheet=None
 ):
     """
-    Resolve the exact Excel worksheet used by the
-    retrieved evidence.
+    Resolve the exact Excel worksheet referenced by
+    the retrieved municipal evidence.
+
+    IMPORTANT:
+    If requested_sheet is supplied and cannot be found,
+    do NOT silently fall back to the first worksheet.
     """
 
     if not source_path:
         return None
 
     try:
-
         keep_vba = (
             source_path.suffix.lower()
             == ".xlsm"
@@ -3875,14 +4092,16 @@ def get_excel_sheet_name(
         if not sheet_names:
             return None
 
-        if requested_sheet:
+        # ----------------------------------------------------
+        # EXACT REQUESTED SHEET
+        # ----------------------------------------------------
 
+        if requested_sheet:
             requested = str(
                 requested_sheet
             ).strip().lower()
 
             for sheet_name in sheet_names:
-
                 if (
                     str(sheet_name)
                     .strip()
@@ -3891,11 +4110,21 @@ def get_excel_sheet_name(
                 ):
                     return sheet_name
 
+            # Requested sheet does not exist.
+            # Never display an unrelated sheet.
+            return None
+
+        # ----------------------------------------------------
+        # NO REQUESTED SHEET
+        #
+        # Only use the first sheet when there is genuinely
+        # no sheet information in the reference metadata.
+        # ----------------------------------------------------
+
         return sheet_names[0]
 
     except Exception:
         return None
-
 
 def create_excel_sheet_download(
     source_path,
@@ -4109,65 +4338,409 @@ tr:nth-child(even) {{
     except Exception:
         return None, None
 
+
+def normalize_service_text(
+    text
+):
+    """
+    Normalize document text and filenames so that
+    variations such as:
+
+        building-rules
+        building_rules
+        building bye-laws
+        building bye laws
+
+    can be matched consistently.
+    """
+
+    text = str(
+        text or ""
+    ).lower()
+
+    text = re.sub(
+        r"[_\-/]+",
+        " ",
+        text
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    ).strip()
+
+    return text
+
+
+def service_match_score(
+    doc,
+    service_name
+):
+    """
+    Strict service-specific relevance scoring.
+
+    IMPORTANT:
+    Generic words such as:
+        birth
+        certificate
+        registration
+        construction
+        permission
+        assessment
+        tax
+
+    must NOT make an unrelated document relevant.
+
+    A document qualifies when:
+        1. Its filename/title identifies the service, OR
+        2. Its content contains a strong service-specific phrase.
+
+    Generic single-word matches are used only for ranking.
+    They can NEVER create relevance by themselves.
+    """
+
+    if not service_name:
+        return 0.0
+
+    config = SERVICE_CONFIG.get(
+        service_name,
+        {}
+    )
+
+    metadata = doc.metadata or {}
+
+    source_file = str(
+        metadata.get(
+            "source_file",
+            ""
+        )
+    )
+
+    document_title = str(
+        metadata.get(
+            "document_title",
+            ""
+        )
+    )
+
+    title = str(
+        metadata.get(
+            "title",
+            ""
+        )
+    )
+
+    heading = str(
+        metadata.get(
+            "heading",
+            ""
+        )
+    )
+
+    page_content = str(
+        doc.page_content or ""
+    )
+
+    # ============================================================
+    # NORMALIZE
+    # ============================================================
+
+    identity_text = normalize_service_text(
+        " ".join([
+            source_file,
+            document_title,
+            title
+        ])
+    )
+
+    content_text = normalize_service_text(
+        " ".join([
+            page_content,
+            heading,
+            title,
+            document_title
+        ])
+    )
+
+    # ============================================================
+    # 1. DOCUMENT NAME / TITLE
+    #
+    # Filename/title is the strongest evidence.
+    # ============================================================
+
+    for alias in config.get(
+        "document_aliases",
+        []
+    ):
+
+        alias_text = normalize_service_text(
+            alias
+        )
+
+        if (
+            alias_text
+            and alias_text in identity_text
+        ):
+            return 100.0
+
+    # ============================================================
+    # 2. SERVICE-SPECIFIC STRONG PHRASES
+    # ============================================================
+
+    strong_phrases = {
+
+        "Property tax": [
+            "property tax",
+            "holding tax",
+            "house tax",
+            "property assessment",
+            "tax assessment",
+            "annual value",
+            "annual valuation",
+            "tax demand",
+            "tax payment",
+            "tax liability",
+            "municipal tax",
+            "municipal taxation",
+            "property mutation"
+        ],
+
+        "Building permission": [
+            "building permission",
+            "building permit",
+            "building plan",
+            "building approval",
+            "building sanction",
+            "approved plan",
+            "sanctioned plan",
+            "development permission",
+            "development approval",
+            "construction permission",
+            "construction approval",
+            "construction rules",
+            "building rules",
+            "building bye laws",
+            "building bye-laws",
+            "building byelaws",
+            "building regulations",
+            "completion certificate",
+            "occupancy certificate",
+            "building completion",
+            "building application",
+            "application for building"
+        ],
+
+        "Trade license": [
+            "trade license",
+            "trade licence",
+            "business license",
+            "business licence",
+            "trade permit",
+            "trade registration",
+            "shop license",
+            "shop licence",
+            "commercial license",
+            "commercial licence",
+            "license renewal",
+            "licence renewal"
+        ],
+
+        "Electricity connection": [
+            "electricity connection",
+            "electrical connection",
+            "electric connection",
+            "power connection",
+            "electricity service",
+            "electrical service",
+            "electricity supply",
+            "power supply",
+            "electricity meter",
+            "electric meter"
+        ],
+
+        "Sanitation": [
+            "sanitation",
+            "sanitation service",
+            "solid waste",
+            "solid waste management",
+            "waste management",
+            "waste disposal",
+            "waste collection",
+            "sewage",
+            "sewerage",
+            "sewer system",
+            "drainage",
+            "public sanitation",
+            "public toilet",
+            "community toilet",
+            "washing facilities"
+        ],
+
+        "Birth certificate": [
+            "birth certificate",
+            "birth registration",
+            "registration of birth",
+            "registration of births",
+            "birth record",
+            "certificate of birth",
+            "registrar of births",
+            "register of births",
+            "births and deaths"
+        ]
+    }
+
+    # ============================================================
+    # 3. WEAK PHRASES
+    #
+    # These are specifically excluded from being evidence.
+    #
+    # Example:
+    # BUILDING RULES.pdf
+    # "Date of birth, if available..."
+    #
+    # This MUST NOT become a Birth Certificate reference.
+    # ============================================================
+
+    weak_phrases = {
+        normalize_service_text(
+            phrase
+        )
+        for phrase in config.get(
+            "weak_phrases",
+            []
+        )
+        if str(
+            phrase
+        ).strip()
+    }
+
+    phrase_hits = []
+
+    for phrase in strong_phrases.get(
+        service_name,
+        []
+    ):
+
+        phrase_text = normalize_service_text(
+            phrase
+        )
+
+        if (
+            not phrase_text
+            or phrase_text in weak_phrases
+        ):
+            continue
+
+        if phrase_text in content_text:
+            phrase_hits.append(
+                phrase_text
+            )
+
+    # ============================================================
+    # 4. ALSO CHECK CONFIGURED MULTI-WORD KEYWORDS
+    #
+    # This keeps the existing SERVICE_CONFIG useful.
+    # ============================================================
+
+    for keyword in config.get(
+        "keywords",
+        []
+    ):
+
+        keyword_text = normalize_service_text(
+            keyword
+        )
+
+        if (
+            not keyword_text
+            or " " not in keyword_text
+            or keyword_text in weak_phrases
+        ):
+            continue
+
+        if (
+            keyword_text in content_text
+            and keyword_text not in phrase_hits
+        ):
+            phrase_hits.append(
+                keyword_text
+            )
+
+    # ============================================================
+    # 5. NO STRONG PHRASE = NO SERVICE MATCH
+    #
+    # This is the critical protection.
+    #
+    # "date of birth" is excluded for Birth Certificate.
+    # Therefore BUILDING RULES.pdf gets ZERO Birth score.
+    # ============================================================
+
+    if not phrase_hits:
+        return 0.0
+
+    # ============================================================
+    # 6. SCORE STRONG PHRASES
+    # ============================================================
+
+    score = min(
+        len(phrase_hits) * 20.0,
+        80.0
+    )
+
+    # ============================================================
+    # 7. GENERIC SINGLE WORDS
+    #
+    # Single words improve ranking only.
+    # They CANNOT create a match.
+    # ============================================================
+
+    single_word_hits = 0
+
+    for keyword in config.get(
+        "keywords",
+        []
+    ):
+
+        keyword_text = normalize_service_text(
+            keyword
+        )
+
+        if (
+            not keyword_text
+            or " " in keyword_text
+        ):
+            continue
+
+        if re.search(
+            rf"\b{re.escape(keyword_text)}\b",
+            content_text
+        ):
+            single_word_hits += 1
+
+    score += min(
+        single_word_hits * 2.0,
+        20.0
+    )
+
+    return score
+
 def service_relevance(
     doc,
     service_name
 ):
     """
-    Strictly check whether a document belongs
-    to the selected municipal service.
+    Return True when the document contains meaningful
+    evidence for the selected municipal service.
     """
 
-    if not service_name:
-        return True
-
-    metadata = doc.metadata or {}
-
-    haystack = " ".join([
-        str(
-            metadata.get(
-                "source_file",
-                ""
-            )
-        ),
-        str(
-            metadata.get(
-                "document_title",
-                ""
-            )
-        ),
-        str(
-            metadata.get(
-                "title",
-                ""
-            )
-        ),
-        str(
-            metadata.get(
-                "heading",
-                ""
-            )
-        ),
-        str(
-            doc.page_content or ""
-        )
-    ]).lower()
-
-    keywords = SERVICE_CONFIG.get(
-        service_name,
-        {}
-    ).get(
-        "keywords",
-        []
+    return (
+        service_match_score(
+            doc,
+            service_name
+        ) >= 10.0
     )
 
-    keyword_hits = sum(
-        1
-        for keyword in keywords
-        if keyword.lower() in haystack
-    )
-
-    return keyword_hits >= 1
 
 def query_relevance(
     doc,
@@ -5212,6 +5785,136 @@ def extract_excel_text(excel_path_string):
         return []
 
 # ============================================================
+# URL / WEB PAGE READING
+# ============================================================
+
+class MunicipalHTMLParser(HTMLParser):
+    """
+    Extract readable text from an official municipal web page.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+        self.skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        tag = str(tag).lower()
+
+        if tag in {
+            "script",
+            "style",
+            "noscript",
+            "svg",
+            "iframe",
+            "nav",
+            "footer"
+        }:
+            self.skip_depth += 1
+
+    def handle_endtag(self, tag):
+        tag = str(tag).lower()
+
+        if tag in {
+            "script",
+            "style",
+            "noscript",
+            "svg",
+            "iframe",
+            "nav",
+            "footer"
+        }:
+            if self.skip_depth > 0:
+                self.skip_depth -= 1
+
+    def handle_data(self, data):
+        if self.skip_depth > 0:
+            return
+
+        text = " ".join(
+            str(data).split()
+        ).strip()
+
+        if text:
+            self.parts.append(text)
+
+    def get_text(self):
+        return " ".join(self.parts).strip()
+
+
+@st.cache_data(show_spinner=False)
+def extract_url_text(url):
+    """
+    Read text from a configured municipal URL.
+
+    Failed URLs return empty text and do not interrupt
+    the complete municipal document loading process.
+    """
+
+    url = str(url or "").strip()
+
+    if not url.startswith(
+        ("http://", "https://")
+    ):
+        return ""
+
+    try:
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 "
+                    "(Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
+                    "Chrome/142.0 Safari/537.36"
+                )
+            }
+        )
+
+        with urllib.request.urlopen(
+            request,
+            timeout=15
+        ) as response:
+
+            content_type = (
+                response.headers.get(
+                    "Content-Type",
+                    ""
+                ).lower()
+            )
+
+            if (
+                "text/html" not in content_type
+                and "application/xhtml" not in content_type
+            ):
+                return ""
+
+            raw_html = response.read(
+                5 * 1024 * 1024
+            )
+
+        parser = MunicipalHTMLParser()
+
+        parser.feed(
+            raw_html.decode(
+                "utf-8",
+                errors="ignore"
+            )
+        )
+
+        parser.close()
+
+        text = parser.get_text()
+
+        return " ".join(
+            text.split()
+        ).strip()
+
+    except Exception:
+        return ""
+
+# ============================================================
 # BUILD COMPLETE DOCUMENT CORPUS
 # ============================================================
 
@@ -5335,6 +6038,56 @@ def load_all_source_documents():
                     "sheet": sheet_data["sheet"],
                     "page_content": text
                 })
+
+
+    # ====================================================
+    # URL / OFFICIAL WEB PAGES
+    # ====================================================
+
+    if URL_FILE.is_file():
+
+        try:
+            configured_urls = (
+                URL_FILE.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            )
+
+        except Exception:
+            configured_urls = []
+
+        seen_urls = set()
+
+        for url in configured_urls:
+
+            url = str(url).strip()
+
+            if not url:
+                continue
+
+            if not url.startswith(
+                ("http://", "https://")
+            ):
+                continue
+
+            if url in seen_urls:
+                continue
+
+            seen_urls.add(url)
+
+            text = extract_url_text(url)
+
+            if len(text) < 20:
+                continue
+
+            documents.append({
+                "source_file": url,
+                "source_path": url,
+                "file_type": "url",
+                "page": None,
+                "sheet": None,
+                "page_content": text
+            })
 
     return documents
 
@@ -5667,17 +6420,41 @@ with st.sidebar:
         use_container_width=True
     ):
 
-        with st.spinner(
-            "Rebuilding municipal knowledge base..."
-        ):
+        success = False
 
-            from rag_build import build_vectorstore
-            success = build_vectorstore()
+        try:
 
+            with st.spinner(
+                "Rebuilding municipal knowledge base..."
+            ):
+
+                from rag_build import (
+                    build_vectorstore
+                )
+
+                success = bool(
+                    build_vectorstore()
+                )
+
+        except Exception as refresh_error:
+
+            success = False
+
+            st.error(
+                "Knowledge Base refresh failed."
+            )
+
+            st.caption(
+                f"Error: {refresh_error}"
+            )
 
         if success:
 
+            # Clear both:
+            # 1. FAISS/vectorstore resources
+            # 2. cached municipal source documents
             st.cache_resource.clear()
+            st.cache_data.clear()
 
             st.success(
                 "Knowledge Base refreshed."
@@ -5685,12 +6462,11 @@ with st.sidebar:
 
             st.rerun()
 
-        else:
+        elif not success:
 
             st.error(
                 "No municipal documents found."
             )
-
 
     # --------------------------------------------------------
     # TRUSTED & SECURE
@@ -6010,10 +6786,21 @@ with st.container(key="question_panel"):
                         "selected_document"
                     ] = None
 
-                    # Store the suggestion as the active question.
+                    # ========================================================
+                    # STORE SERVICE-SPECIFIC SEARCH QUESTION
+                    # ========================================================
+
                     st.session_state[
                         "active_query"
-                    ] = selected_service
+                    ] = (
+                        SERVICE_CONFIG.get(
+                            selected_service,
+                            {}
+                        ).get(
+                            "query",
+                            selected_service
+                        )
+                    )
 
                     # Mark that a search should run.
                     st.session_state[
@@ -6050,8 +6837,9 @@ with st.container(key="question_panel"):
 # ============================================================
 
 NO_INFORMATION_MESSAGE = (
-    "I’m sorry, but no information is available "
-    "in the municipal documents for this question."
+    "We couldn’t find any relevant information in the available "
+    "municipal documents for your question. Please try rephrasing "
+    "your question or explore another service."
 )
 
 # ============================================================
@@ -6218,81 +7006,39 @@ if run_search and active_query:
 
             if active_service:
 
-                service_keywords = (
-                    SERVICE_CONFIG.get(
-                        active_service,
-                        {}
-                    ).get(
-                        "keywords",
-                        []
-                    )
-                )
+                # ============================================================
+                # SERVICE-SPECIFIC SEARCH
+                # ============================================================
+                #
+                # Search every loaded municipal document.
+                #
+                # Do NOT search only for the literal suggestion text.
+                # Do NOT depend on one generic keyword.
+                #
+                # Use the service-specific relevance score.
+                # ============================================================
 
                 for doc in indexed_documents:
 
-                    if not service_relevance(
-                        doc,
-                        active_service
-                    ):
-                        continue
-
-                    metadata = (
-                        doc.metadata or {}
+                    service_score = (
+                        service_match_score(
+                            doc,
+                            active_service
+                        )
                     )
 
-                    text = " ".join([
-                        str(
-                            metadata.get(
-                                "source_file",
-                                ""
-                            )
-                        ),
-                        str(
-                            metadata.get(
-                                "document_title",
-                                ""
-                            )
-                        ),
-                        str(
-                            metadata.get(
-                                "title",
-                                ""
-                            )
-                        ),
-                        str(
-                            metadata.get(
-                                "heading",
-                                ""
-                            )
-                        ),
-                        str(
-                            doc.page_content or ""
-                        )
-                    ]).lower()
+                    if service_score < 10.0:
+                        continue
 
-                    keyword_hits = 0
-
-                    for keyword in service_keywords:
-
-                        if (
-                            keyword.lower()
-                            in text
-                        ):
-                            keyword_hits += 1
-
-                    if keyword_hits > 0:
-
-                        # Negative score:
-                        # more keyword matches = better result.
-                        document_results.append(
-                            (
-                                doc,
-                                -float(
-                                    keyword_hits
-                                )
+                    document_results.append(
+                        (
+                            doc,
+                            -float(
+                                service_score
                             )
                         )
-
+                    )
+                    
             else:
 
                 # ====================================================
@@ -6511,13 +7257,176 @@ if run_search and active_query:
                         )
                     )
 
-                # =================================================
+                #                # =================================================
                 # KEEP BEST EVIDENCE
+                #
+                # Do not blindly take the first 60 chunks.
+                # Large municipal documents can contain relevant
+                # information on later pages.
+                #
+                # Preserve:
+                #   1. strongest evidence
+                #   2. multiple source documents
+                #   3. multiple relevant pages/sheets
                 # =================================================
 
-                answer_candidates = (
-                    unique_chunks[:30]
-                )
+                MAX_EVIDENCE = 40
+                MAX_PER_SOURCE = 8
+
+                answer_candidates = []
+                source_counts = {}
+                selected_locations = set()
+
+                # -------------------------------------------------
+                # PASS 1:
+                # Select strongest evidence while preventing one
+                # large document from consuming the entire context.
+                # -------------------------------------------------
+
+                for doc, score in unique_chunks:
+
+                    metadata = (
+                        doc.metadata or {}
+                    )
+
+                    source_file = str(
+                        metadata.get(
+                            "source_file",
+                            ""
+                        )
+                    ).strip()
+
+                    source_identity = (
+                        normalize_source_identity(
+                            source_file
+                        )
+                    )
+
+                    page = normalize_reference_location(
+                        metadata.get("page")
+                    )
+
+                    sheet = normalize_reference_location(
+                        metadata.get("sheet")
+                    )
+
+                    location_key = (
+                        source_identity,
+                        page,
+                        sheet
+                    )
+
+                    current_source_count = (
+                        source_counts.get(
+                            source_identity,
+                            0
+                        )
+                    )
+
+                    if current_source_count >= MAX_PER_SOURCE:
+                        continue
+
+                    if location_key in selected_locations:
+                        continue
+
+                    answer_candidates.append(
+                        (
+                            doc,
+                            score
+                        )
+                    )
+
+                    selected_locations.add(
+                        location_key
+                    )
+
+                    source_counts[
+                        source_identity
+                    ] = (
+                        current_source_count + 1
+                    )
+
+                    if len(answer_candidates) >= MAX_EVIDENCE:
+                        break
+
+                # -------------------------------------------------
+                # PASS 2:
+                # If the first pass produced too little evidence,
+                # fill remaining slots with the next strongest
+                # unique chunks.
+                # -------------------------------------------------
+
+                if len(answer_candidates) < MAX_EVIDENCE:
+
+                    selected_keys = {
+                        (
+                            normalize_source_identity(
+                                str(
+                                    (
+                                        doc.metadata or {}
+                                    ).get(
+                                        "source_file",
+                                        ""
+                                    )
+                                ).strip()
+                            ),
+                            normalize_reference_location(
+                                (
+                                    doc.metadata or {}
+                                ).get("page")
+                            ),
+                            normalize_reference_location(
+                                (
+                                    doc.metadata or {}
+                                ).get("sheet")
+                            )
+                        )
+                        for doc, _ in answer_candidates
+                    }
+
+                    for doc, score in unique_chunks:
+
+                        metadata = (
+                            doc.metadata or {}
+                        )
+
+                        source_identity = (
+                            normalize_source_identity(
+                                str(
+                                    metadata.get(
+                                        "source_file",
+                                        ""
+                                    )
+                                ).strip()
+                            )
+                        )
+
+                        location_key = (
+                            source_identity,
+                            normalize_reference_location(
+                                metadata.get("page")
+                            ),
+                            normalize_reference_location(
+                                metadata.get("sheet")
+                            )
+                        )
+
+                        if location_key in selected_keys:
+                            continue
+
+                        answer_candidates.append(
+                            (
+                                doc,
+                                score
+                            )
+                        )
+
+                        selected_keys.add(
+                            location_key
+                        )
+
+                        if len(answer_candidates) >= MAX_EVIDENCE:
+                            break
 
                 docs = [
                     doc
@@ -6587,6 +7496,28 @@ if run_search and active_query:
                             f"\nSheet: {sheet}"
                         )
 
+                    evidence_text = str(
+                        doc.page_content or ""
+                    ).strip()
+
+                    # Prevent a single large document page or
+                    # worksheet from consuming the entire model
+                    # context.
+                    MAX_EVIDENCE_CHARS = 3500
+                    
+
+                    if len(evidence_text) > MAX_EVIDENCE_CHARS:
+
+                        evidence_text = (
+                            evidence_text[
+                                :MAX_EVIDENCE_CHARS
+                            ].rsplit(
+                                " ",
+                                1
+                            )[0]
+                            + "…"
+                        )
+
                     context_parts.append(
                         f"""
 [Evidence {index}]
@@ -6596,7 +7527,7 @@ Type:
 {file_type}
 
 Content:
-{doc.page_content}
+{evidence_text}
 """
                     )
 
@@ -6672,16 +7603,31 @@ information, answer only that part.
 - chunks
 - internal processing
 
+
 11. A suggestion such as Property tax, Building permission,
 Trade license, Sanitation, or Birth certificate is only a
 search topic. It is NOT evidence.
 
-12. When a suggestion is clicked, answer only from the
-municipal documents that contain relevant information.
+12. When a suggestion is clicked, treat the supplied
+municipal evidence as the source of the answer.
 
-13. If there is no relevant evidence, return exactly:
+13. For a service suggestion, summarize the relevant
+information actually found in the supplied evidence.
 
-NO_INFORMATION_MESSAGE
+14. If the supplied evidence contains relevant information,
+DO NOT return NO_INFORMATION_MESSAGE.
+
+15. Return NO_INFORMATION_MESSAGE only when the supplied
+evidence contains no relevant information for the selected
+service.
+
+16. If several relevant pages or documents are supplied,
+combine the relevant information into one useful answer.
+
+17. Do not say that information is unavailable merely
+because the resident did not ask a detailed question.
+A service suggestion itself means that the resident wants
+the available municipal information about that service.
 
 OFFICIAL MUNICIPAL EVIDENCE:
 
@@ -6733,9 +7679,9 @@ ANSWER:
                         }
                     )
 
-                # =================================================
+                # ========================================================
                 # CLEAN RESPONSE
-                # =================================================
+                # ========================================================
 
                 clean_response = re.sub(
                     r"\[Source\s+\d+\]",
@@ -6750,35 +7696,98 @@ ANSWER:
                     clean_response
                 ).strip()
 
-                # =================================================
-                # REFERENCE SELECTION
-                # SHOW ONLY REFERENCES DIRECTLY RELEVANT
-                # TO THE GENERATED ANSWER
-                # =================================================
+
+                # ========================================================
+                # NORMALIZE NO-INFORMATION RESPONSE
+                #
+                # The LLM is instructed to return the internal token
+                # NO_INFORMATION_MESSAGE.
+                #
+                # Never display that token to the resident.
+                # ========================================================
+
+                if (
+                    clean_response.strip()
+                    == "NO_INFORMATION_MESSAGE"
+                    or
+                    "NO_INFORMATION_MESSAGE" in clean_response
+                ):
+                    clean_response = NO_INFORMATION_MESSAGE
+
+                                # ========================================================
+                # FINAL INFORMATION / REFERENCE DECISION
+                # ========================================================
+                #
+                # RULE:
+                # 1. No usable evidence -> no references.
+                # 2. Model says no information -> no references.
+                # 3. Only a real answer may display references.
+                # ========================================================
 
                 if (
                     not docs
                     or
-                    clean_response.strip()
+                    not answer_candidates
+                    or clean_response.strip()
                     == NO_INFORMATION_MESSAGE
                 ):
 
+                    clean_response = (
+                        NO_INFORMATION_MESSAGE
+                    )
+
                     insufficient_information = True
+
                     top_references = []
 
                 else:
 
                     insufficient_information = False
 
-                    # ---------------------------------------------
-                    # SELECT ONLY DIRECTLY RELEVANT REFERENCES
-                    # ---------------------------------------------
-                    top_references = build_direct_references(
-                        answer_candidates,
-                        active_query,
-                        clean_response,
-                        limit=3
+                    # ----------------------------------------------------
+                    # FIRST:
+                    # References that directly support the answer.
+                    # ----------------------------------------------------
+
+                    top_references = (
+                        build_direct_references(
+                            answer_candidates,
+                            active_query,
+                            clean_response,
+                            limit=3
+                        )
                     )
+
+                    # ----------------------------------------------------
+                    # FALLBACK:
+                    # Use the strongest retrieved evidence only when
+                    # an actual answer exists.
+                    # ----------------------------------------------------
+
+                    if not top_references:
+
+                        top_references = (
+                            build_top_references(
+                                answer_candidates,
+                                limit=3
+                            )
+                        )
+
+                    # ----------------------------------------------------
+                    # FINAL SAFETY:
+                    # No valid reference means the answer is not
+                    # sufficiently grounded for display.
+                    # ----------------------------------------------------
+
+                    if not top_references:
+
+                        clean_response = (
+                            NO_INFORMATION_MESSAGE
+                        )
+
+                        insufficient_information = True
+
+                        top_references = []
 
         # ========================================================
         # ANSWER CARD
@@ -7179,6 +8188,16 @@ ANSWER:
                                 )
                             )
 
+                            # If a specific sheet was referenced but could
+                            # not be resolved, do NOT show another sheet.
+                            if (
+                                requested_sheet
+                                and not selected_sheet
+                            ):
+                                actions = ""
+                                continue
+
+
                             # -----------------------------------------
                             # CREATE VIEWABLE HTML OF ONLY
                             # THE REFERENCED SHEET
@@ -7192,94 +8211,99 @@ ANSWER:
                             )
 
                             if (
-                                excel_bytes
-                                and selected_sheet
+                                not excel_bytes
+                                or
+                                not selected_sheet
                             ):
+                                actions = ""
+                                continue
 
-                                excel_base64 = (
+
+                            excel_base64 = (
+                                base64.b64encode(
+                                    excel_bytes
+                                ).decode("ascii")
+                            )
+
+                            safe_filename = (
+                                html.escape(
+                                    source_path.name,
+                                    quote=True
+                                )
+                            )
+
+
+                            # -------------------------------------
+                            # IMPORTANT:
+                            # View = ONLY referenced Excel sheet
+                            # Download = ONLY referenced Excel sheet
+                            # -------------------------------------
+
+                            if excel_html:
+
+                                excel_html_base64 = (
                                     base64.b64encode(
-                                        excel_bytes
-                                    ).decode("ascii")
-                                )
-
-                                safe_filename = (
-                                    html.escape(
-                                        source_path.name,
-                                        quote=True
-                                    )
-                                )
-
-                                # -------------------------------------
-                                # IMPORTANT:
-                                # View = ONLY referenced Excel sheet
-                                # Download = ONLY referenced Excel sheet
-                                # -------------------------------------
-
-                                if excel_html:
-
-                                    excel_html_base64 = (
-                                        base64.b64encode(
-                                            excel_html.encode(
-                                                "utf-8"
-                                            )
-                                        ).decode(
-                                            "ascii"
+                                        excel_html.encode(
+                                            "utf-8"
                                         )
+                                    ).decode(
+                                        "ascii"
                                     )
+                                )
 
-                                    actions = f"""
-                                    <button
-                                        type="button"
-                                        class="reference-view-button"
-                                        onclick="viewExcelSheet(
-                                            '{excel_html_base64}',
-                                            '{html.escape(
-                                                source_path.name,
-                                                quote=True
-                                            )}',
-                                            '{html.escape(
-                                                str(selected_sheet),
-                                                quote=True
-                                            )}'
-                                        )"
-                                    >
-                                        View
-                                    </button>
+                                actions = f"""
+                                <button
+                                    type="button"
+                                    class="reference-view-button"
+                                    onclick="viewExcelSheet(
+                                        '{excel_html_base64}',
+                                        '{html.escape(
+                                            source_path.name,
+                                            quote=True
+                                        )}',
+                                        '{html.escape(
+                                            str(selected_sheet),
+                                            quote=True
+                                        )}'
+                                    )"
+                                >
+                                    View
+                                </button>
 
-                                    <button
-                                        type="button"
-                                        class="reference-download-button"
-                                        onclick="downloadBase64File(
-                                            '{excel_base64}',
-                                            '{safe_filename}',
-                                            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                                        )"
-                                        title="Download referenced sheet"
-                                    >
-                                        ↓
-                                    </button>
-                                    """
+                                <button
+                                    type="button"
+                                    class="reference-download-button"
+                                    onclick="downloadBase64File(
+                                        '{excel_base64}',
+                                        '{safe_filename}',
+                                        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                                    )"
+                                    title="Download referenced sheet"
+                                >
+                                    ↓
+                                </button>
+                                """
 
-                                else:
+                            else:
 
-                                    actions = f"""
-                                    <button
-                                        type="button"
-                                        class="reference-download-button"
-                                        onclick="downloadBase64File(
-                                            '{excel_base64}',
-                                            '{safe_filename}',
-                                            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                                        )"
-                                        title="Download referenced sheet"
-                                    >
-                                        ↓
-                                    </button>
-                                    """
+                                actions = f"""
+                                <button
+                                    type="button"
+                                    class="reference-download-button"
+                                    onclick="downloadBase64File(
+                                        '{excel_base64}',
+                                        '{safe_filename}',
+                                        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                                    )"
+                                    title="Download referenced sheet"
+                                >
+                                    ↓
+                                </button>
+                                """
 
                         except Exception:
 
-                            actions = ""
+                                actions = ""
 
                     # =================================================
                     # WORD
