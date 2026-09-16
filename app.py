@@ -6851,7 +6851,10 @@ API_ERROR_MESSAGE = (
     "Sorry, NagarSathi is temporarily unable to connect "
     "to the AI service. Please try again later. "
     "If the problem continues, please contact the developer "
-    "of NagarSathi — Heramba Kakati."
+    "of NagarSathi.\n\n"
+    "Developer: Heramba Kakati\n"
+    "Email: herambakakati123@gmail.com\n"
+    "Phone: +919864381922"
 )
 
 
