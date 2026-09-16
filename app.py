@@ -6852,8 +6852,8 @@ API_ERROR_MESSAGE = (
     "to the AI service. Please try again later. "
     "If the problem continues, please contact the developer "
     "of NagarSathi.\n\n"
-    "Developer: Heramba Kakati\n\n"
-    "Email: herambakakati123@gmail.com\n\n"
+    "Developer: Heramba Kakati\n"
+    "Email: herambakakati123@gmail.com\n"
     "Phone: +919864381922"
 )
 
