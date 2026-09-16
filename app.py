@@ -6842,6 +6842,19 @@ NO_INFORMATION_MESSAGE = (
     "your question or explore another service."
 )
 
+
+# ============================================================
+# API / AI SERVICE ERROR MESSAGE
+# ============================================================
+
+API_ERROR_MESSAGE = (
+    "Sorry, NagarSathi is temporarily unable to connect "
+    "to the AI service. Please try again later. "
+    "If the problem continues, please contact the developer "
+    "of NagarSathi — Heramba Kakati."
+)
+
+
 # ============================================================
 # QUESTION PROCESSING
 # ============================================================
@@ -9015,25 +9028,79 @@ ANSWER:
             "run_search"
         ] = False
 
+
     except Exception as error:
+        # ========================================================
+        # API / SYSTEM ERROR HANDLER
+        # ========================================================
 
         st.session_state[
             "run_search"
         ] = False
 
-        st.error(
-            "Unable to process the question."
+        # --------------------------------------------------------
+        # Detect OpenAI / API related failures
+        # --------------------------------------------------------
+
+        error_text = str(error).lower()
+
+        api_error_keywords = (
+            "api",
+            "openai",
+            "apikey",
+            "api_key",
+            "authentication",
+            "unauthorized",
+            "401",
+            "403",
+            "429",
+            "rate limit",
+            "quota",
+            "connection",
+            "connect",
+            "timeout",
+            "timed out",
+            "server error",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "internal server error",
+            "model",
+            "insufficient_quota"
         )
 
-        st.exception(
-            error
+        is_api_error = any(
+            keyword in error_text
+            for keyword in api_error_keywords
         )
 
+        # --------------------------------------------------------
+        # API unavailable / API failure
+        # --------------------------------------------------------
 
-# ============================================================
-# OUTER ERROR HANDLER
-# ============================================================
+        if is_api_error:
 
+            insufficient_information = True
+            top_references = []
+
+            st.warning(
+                API_ERROR_MESSAGE
+            )
+
+        # --------------------------------------------------------
+        # Other unexpected application errors
+        # --------------------------------------------------------
+
+        else:
+
+            st.error(
+                "Sorry, we were unable to process your "
+                "question at the moment. Please try again."
+            )
+
+            # Keep technical details out of the resident UI.
+            # The actual exception remains available in the
+            # application/server logs for debugging.
 # ============================================================
 # BOTTOM AI DISCLAIMER
 # ============================================================
