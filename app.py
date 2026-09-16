@@ -9015,20 +9015,79 @@ ANSWER:
             "run_search"
         ] = False
 
+    
     except Exception as error:
+        # ========================================================
+        # API / SYSTEM ERROR HANDLER
+        # ========================================================
 
         st.session_state[
             "run_search"
         ] = False
 
-        st.error(
-            "Unable to process the question."
+        # --------------------------------------------------------
+        # Detect OpenAI / API related failures
+        # --------------------------------------------------------
+
+        error_text = str(error).lower()
+
+        api_error_keywords = (
+            "api",
+            "openai",
+            "apikey",
+            "api_key",
+            "authentication",
+            "unauthorized",
+            "401",
+            "403",
+            "429",
+            "rate limit",
+            "quota",
+            "connection",
+            "connect",
+            "timeout",
+            "timed out",
+            "server error",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "internal server error",
+            "model",
+            "insufficient_quota"
         )
 
-        st.exception(
-            error
+        is_api_error = any(
+            keyword in error_text
+            for keyword in api_error_keywords
         )
 
+        # --------------------------------------------------------
+        # API unavailable / API failure
+        # --------------------------------------------------------
+
+        if is_api_error:
+
+            insufficient_information = True
+            top_references = []
+
+            st.warning(
+                API_ERROR_MESSAGE
+            )
+
+        # --------------------------------------------------------
+        # Other unexpected application errors
+        # --------------------------------------------------------
+
+        else:
+
+            st.error(
+                "Sorry, we were unable to process your "
+                "question at the moment. Please try again."
+            )
+
+            # Keep technical details out of the resident UI.
+            # The actual exception remains available in the
+            # application/server logs for debugging.
 
 # ============================================================
 # OUTER ERROR HANDLER
